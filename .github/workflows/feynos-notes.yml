@@ -4171,7 +4171,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/build-push-action@v6
+      - name: Build image for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: src/server
+          platforms: linux/amd64
+          load: true
+          tags: feynos-sync-test:ci
+
+      - name: Test the image
+        shell: bash
+        run: |
+          set -o pipefail
+          fail() { echo "::error title=Server image test failed::$1 $(docker logs t 2>&1 | tail -20 | tr -s '[:space:]' ' ')"; exit 1; }
+          docker run -d --name t -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 feynos-sync-test:ci || fail "container did not start"
+          ok=""
+          for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8787/notes/api/health; then ok=1; break; fi; sleep 1; done
+          [ -n "$ok" ] || fail "health check never answered"
+          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' http://127.0.0.1:8787/notes/api/login | grep -q token || fail "login failed"
+          docker logs t
+
+      - name: Publish image
+        uses: docker/build-push-action@v6
         with:
           context: src/server
           platforms: linux/amd64,linux/arm64
@@ -4179,14 +4200,6 @@ jobs:
           tags: |
             ghcr.io/feynos-lin/feynos-note-sync:latest
             ghcr.io/feynos-lin/feynos-note-sync:${{ env.APP_VERSION }}
-
-      - name: Quick test of the image
-        shell: bash
-        run: |
-          docker run -d --name t -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 ghcr.io/feynos-lin/feynos-note-sync:latest
-          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8787/notes/api/health && break; sleep 1; done
-          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' http://127.0.0.1:8787/notes/api/login | grep -q token
-          docker logs t
 
       - uses: actions/upload-artifact@v4
         with:
