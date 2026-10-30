@@ -4704,7 +4704,8 @@ jobs:
         run: |
           set -o pipefail
           fail() { echo "::error title=Server image test failed::$1 $(docker logs fns-test 2>&1 | tail -20 | tr -s '[:space:]' ' ')"; exit 1; }
-          docker build -t feynos-sync-test:ci src/server
+          docker build --progress=plain -t feynos-sync-test:ci src/server > build.log 2>&1 || { cat build.log; echo "::error title=Server image build failed::$(grep -v '^#[0-9]* \(sha256\|DONE\|CACHED\|extracting\|resolve\)' build.log | tail -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
+          tail -5 build.log
           out=$(docker run -d --name fns-test -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 feynos-sync-test:ci 2>&1) || fail "docker run: $out"
           sleep 2
           [ "$(docker inspect -f '{{.State.Running}}' fns-test)" = "true" ] || fail "container exited:"
