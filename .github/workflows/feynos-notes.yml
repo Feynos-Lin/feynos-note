@@ -4987,9 +4987,14 @@ jobs:
           mkdir -p ../../out
           if [ -n "$KS_B64" ]; then
             echo "Building release APK signed with your key"
+            trap 'echo "::error title=Android signing failed::step: $BASH_COMMAND"' ERR
+            # tolerate stray spaces / line breaks from copy-pasting the secrets
+            KS_PASS=$(printf '%s' "$KS_PASS" | tr -d '[:space:]'); KEY_PASS=$(printf '%s' "$KEY_PASS" | tr -d '[:space:]'); KEY_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '[:space:]')
+            export KS_PASS KEY_PASS
+            printf '%s' "$KS_B64" | tr -d '[:space:]' | base64 -d > release.jks || { echo "::error title=Android signing failed::ANDROID_KEYSTORE_B64 isn't valid - re-copy the whole long line"; exit 1; }
+            keytool -list -keystore release.jks -storepass "$KS_PASS" -alias "$KEY_ALIAS" > /dev/null 2>&1 || { echo "::error title=Android signing failed::The keystore didn't open with ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS - check those two secrets ($(wc -c < release.jks) byte keystore)"; exit 1; }
             ./gradlew assembleRelease --no-daemon > gradle.log 2>&1 || { cat gradle.log; echo "::error title=Android build failed::$(grep -E 'error:|FAILURE|What went wrong|\.java:[0-9]+' gradle.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
             BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
-            echo "$KS_B64" | base64 -d > release.jks
             "$BT/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
             "$BT/apksigner" sign --ks release.jks --ks-pass env:KS_PASS --ks-key-alias "$KEY_ALIAS" \
               --key-pass env:KEY_PASS --out "../../out/FeynosNotes-$APP_VERSION.apk" aligned.apk
