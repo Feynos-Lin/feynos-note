@@ -4412,7 +4412,7 @@ jobs:
               p.on('close', code => {
                 clearTimeout(timer);
                 if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
-                else reject(new Error(`${cmd} failed: ${err.trim().split('\n').slice(-3).join(' ') || 'exit ' + code}`));
+                else reject(new Error(`${cmd} failed: ${err.split('\n').map(l => l.trim()).filter(l => l && !/backtrace|RUST_BACKTRACE/i.test(l)).slice(0, 4).join(' ') || 'exit ' + code}`));
               });
             });
           }
@@ -4554,6 +4554,8 @@ jobs:
               const pkg = files.filter(f => /\.onepkg$/i.test(f));
               if (pkg.length) return pkg;
               // the top-most table of contents describes the whole notebook (sections + groups)
+              job.zipRoot = dir;
+              job.zipSections = one;
               if (toc.length) return [toc[0]];
               if (one.length) return one;
               throw new Error("That zip doesn't contain any OneNote files.");
@@ -4563,7 +4565,22 @@ jobs:
               job.progress = { done: 0, total: 0, current: 'Converting OneNote file…' };
               const inputs = await oneNoteInputs(job, file, work);
               const out = path.join(work, 'out');
-              await run('one2html', ['-i', ...inputs, '-o', out, '--note-tag-icons', 'emoji']);
+              try {
+                if (job.zipSections && job.zipSections.length && inputs.length === job.zipSections.length) throw new Error('per-section');
+                await run('one2html', ['-i', ...inputs, '-o', out, '--note-tag-icons', 'emoji']);
+              } catch (e) {
+                if (!job.zipSections || !job.zipSections.length) throw e;
+                // convert each section on its own, keeping the zip's folders as notebook / section groups
+                await fs.rm(out, { recursive: true, force: true });
+                job.perSection = true;
+                let ok = 0, lastErr = e;
+                for (const one of job.zipSections) {
+                  const rel = path.relative(job.zipRoot, path.dirname(one));
+                  try { await run('one2html', ['-i', one, '-o', path.join(out, rel), '--note-tag-icons', 'emoji']); ok++; }
+                  catch (err) { lastErr = err; log('section failed:', one, err.message); }
+                }
+                if (!ok) throw lastErr;
+              }
 
               const htmlFiles = (await walk(out)).filter(f => f.toLowerCase().endsWith('.html'));
               const docs = new Map();
@@ -4601,14 +4618,19 @@ jobs:
               const fallbackNb = path.basename(job.name, path.extname(job.name)) || 'Imported notebook';
               const secOrder = new Map();
               for (const sec of sections.sort((a, b) => a.file.localeCompare(b.file))) {
-                const nbName = sec.nb ? sec.nb.name : fallbackNb;
-                const nbId = ensureNotebook(rid('notebook', 'file:' + nbName), nbName, stats);
                 // sections inside section groups get the group's name in front
                 let secName = sec.name;
+                let nbOverride = null;
+                if (!sec.nb && job.perSection) {
+                  const parts = path.relative(out, path.dirname(sec.file)).split(path.sep).filter(x => x && x !== '.');
+                  if (parts.length) { nbOverride = parts[0]; if (parts.length > 1) secName = parts.slice(1).join(' › ') + ' › ' + secName; }
+                }
                 if (sec.nb) {
                   const rel = path.relative(sec.nb.dir, path.dirname(sec.file));
                   if (rel && !rel.startsWith('..')) secName = rel.split(path.sep).join(' › ') + ' › ' + secName;
                 }
+                const nbName = sec.nb ? sec.nb.name : (nbOverride || fallbackNb);
+                const nbId = ensureNotebook(rid('notebook', 'file:' + nbName), nbName, stats);
                 const ord = secOrder.get(nbId) || 0; secOrder.set(nbId, ord + 1);
                 const secId = ensureSection(rid('section', 'file:' + nbName + '/' + secName), nbId, secName, sec.nb && sec.nb.color, store.maxOrder('section:' + nbId) + 1, stats);
 
@@ -4923,6 +4945,7 @@ jobs:
           java-version: 21
 
       - name: Keep the debug signing key between builds
+        id: dbgkey
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
@@ -4957,6 +4980,7 @@ jobs:
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          DEBUG_KEY_HIT: ${{ steps.dbgkey.outputs.cache-hit }}
         run: |
           cd app/android
           chmod +x gradlew
@@ -4971,6 +4995,10 @@ jobs:
               --key-pass env:KEY_PASS --out "../../out/FeynosNotes-$APP_VERSION.apk" aligned.apk
             rm -f release.jks
           else
+            if [ "$DEBUG_KEY_HIT" != "true" ]; then
+              echo "::error title=Android signing key unavailable::The cached signing key could not be restored, so this APK would not install over your current app. Add the ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD secrets (see README), or re-run the build."
+              exit 1
+            fi
             echo "No signing secrets - building debug-signed APK"
             ./gradlew assembleDebug --no-daemon > gradle.log 2>&1 || { cat gradle.log; echo "::error title=Android build failed::$(grep -E 'error:|FAILURE|What went wrong|\.java:[0-9]+' gradle.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
             cp app/build/outputs/apk/debug/app-debug.apk "../../out/FeynosNotes-$APP_VERSION.apk"
