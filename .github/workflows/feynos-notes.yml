@@ -202,6 +202,7 @@ jobs:
           <script src="platform.js"></script>
           <script src="store.js"></script>
           <script src="sync.js"></script>
+          <script src="updater.js"></script>
           <script src="sketch.js"></script>
           <script src="app.js"></script>
           </body>
@@ -725,7 +726,10 @@ jobs:
               backupOnClose: true,
               lastBackupAt: 0,
               lastBackupNote: '',
-              remindDays: 7            // android: remind to back up after N days, 0 = off
+              remindDays: 7,           // android: remind to back up after N days, 0 = off
+              autoUpdateCheck: true,
+              lastUpdateCheck: 0,
+              skippedVersion: ''
             };
             const DEFAULT_SYNC = {
               url: '', token: '', device: '', serverId: '',
@@ -1404,6 +1408,75 @@ jobs:
               uploadImport,
               importFileStatus: id => fileJob('status', id),
               importFileCancel: id => fileJob('cancel', id)
+            };
+          })();
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/www/updater.js)"
+          cat > src/www/updater.js <<'FEYNOS_EOF'
+          /* Feynos Notes - in-app updates from GitHub Releases
+             desktop: electron-updater (Windows installer runs silently; Fedora installs the .rpm via dnf after a password prompt)
+             android: downloads the new .apk and opens the Android installer */
+          (function () {
+            'use strict';
+            const REPO = 'Feynos-Lin/feynos-note';
+            const P = window.Platform;
+            const desk = window.feynosDesktop;
+            const cap = window.FeynosCap;
+
+            const newer = (a, b) => {
+              const pa = String(a).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+              const pb = String(b).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+              for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
+              return false;
+            };
+
+            let latestAndroid = null;
+            const listeners = new Set();
+            if (desk && desk.onUpdateEvent) desk.onUpdateEvent(e => listeners.forEach(fn => fn(e)));
+
+            async function check(current) {
+              if (!/^\d+\.\d+\.\d+$/.test(current)) return { supported: false, current, reason: 'This is a development build.' };
+              if (P.isDesktop) {
+                if (!desk.checkUpdate) return { supported: false, current, reason: 'Update support needs a newer build.' };
+                return desk.checkUpdate();
+              }
+              if (P.isAndroid) {
+                const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+                if (res.status === 403) throw new Error('GitHub is limiting update checks right now - try again in an hour.');
+                if (!res.ok) throw new Error('Couldn\'t reach GitHub (HTTP ' + res.status + ').');
+                const rel = await res.json();
+                const latest = String(rel.tag_name || '').replace(/^v/, '');
+                const apk = (rel.assets || []).find(a => /\.apk$/i.test(a.name));
+                latestAndroid = apk ? { version: latest, url: apk.browser_download_url, size: apk.size } : null;
+                return { supported: true, current, latest, available: !!apk && newer(latest, current), notes: (rel.body || '').slice(0, 600), size: apk && apk.size };
+              }
+              return { supported: false, current, reason: 'Updates are for the installed apps.' };
+            }
+
+            /* onProgress(percent) - desktop resolves when downloaded (call install() after); android opens the installer */
+            async function download(onProgress) {
+              if (P.isDesktop) {
+                const off = e => { if (e.type === 'progress' && onProgress) onProgress(e.percent); };
+                listeners.add(off);
+                try { await desk.downloadUpdate(); } finally { listeners.delete(off); }
+                return 'ready';
+              }
+              if (P.isAndroid) {
+                if (!latestAndroid) throw new Error('Check for updates first.');
+                const handle = await cap.ApkUpdater.addListener('downloadProgress', d => onProgress && onProgress(d.percent));
+                try { await cap.ApkUpdater.downloadAndInstall({ url: latestAndroid.url }); } finally { handle.remove(); }
+                return 'installer-opened';
+              }
+              throw new Error('Not supported here');
+            }
+
+            window.Updater = {
+              check, download, newer,
+              install: () => desk.installUpdate(),
+              canInstallApk: async () => (P.isAndroid ? (await cap.ApkUpdater.canInstall()).allowed : true),
+              openInstallSettings: () => cap.ApkUpdater.openInstallSettings(),
+              get supported() { return P.isDesktop || P.isAndroid; }
             };
           })();
           FEYNOS_EOF
@@ -2476,6 +2549,14 @@ jobs:
                   <p class="hint">Open a backup file from your Google Drive or Proton Drive. You can merge it with what's here (newer edits win) or replace everything.</p>
                   <div class="row-inline"><button class="btn" id="btnRestore">Restore from backup file…</button>${P.isDesktop ? '<button class="btn" id="btnSaveCopy">Save a copy as…</button>' : ''}</div>
                 </div>
+                ${Updater.supported ? `<div class="settings-section" id="updSection">
+                  <h3>${ICON.info} Updates</h3>
+                  <div class="status-line" id="updStatus">Version <b>${esc(APP_VERSION)}</b></div>
+                  <div class="row-inline" style="margin-top:10px;align-items:center">
+                    <button class="btn" id="btnCheckUpdate">Check for updates</button>
+                    <label class="hint" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="setAutoUpd" ${st.autoUpdateCheck ? 'checked' : ''}> Check automatically</label>
+                  </div>
+                </div>` : ''}
                 <div class="settings-section">
                   <h3>${ICON.palette} Appearance</h3>
                   <div class="row-inline" style="align-items:center;gap:14px">
@@ -2513,6 +2594,21 @@ jobs:
                     m.querySelector('#setRemind').onchange = e => S.saveSettings({ remindDays: +e.target.value });
                   }
                   wireSyncSection(m);
+                  if (m.querySelector('#btnCheckUpdate')) {
+                    m.querySelector('#setAutoUpd').onchange = e => S.saveSettings({ autoUpdateCheck: e.target.checked });
+                    m.querySelector('#btnCheckUpdate').onclick = async () => {
+                      const line = m.querySelector('#updStatus'); const btn = m.querySelector('#btnCheckUpdate');
+                      btn.disabled = true; line.innerHTML = 'Checking…';
+                      try {
+                        const r = await Updater.check(APP_VERSION);
+                        S.saveSettings({ lastUpdateCheck: Date.now() });
+                        if (!r.supported) line.innerHTML = `Version <b>${esc(APP_VERSION)}</b> · ${esc(r.reason || 'Updates aren\'t available here')}`;
+                        else if (r.available) { line.innerHTML = `Version <b>${esc(r.latest)}</b> is available (you have ${esc(r.current)})`; btn.textContent = 'Update now'; btn.disabled = false; btn.onclick = () => runUpdate(r); return; }
+                        else line.innerHTML = `Version <b>${esc(r.current)}</b> · you're up to date ✓`;
+                      } catch (err) { line.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+                      btn.disabled = false;
+                    };
+                  }
                   if (focusBackup) m.querySelector('#backupSection').scrollIntoView({ block: 'nearest' });
                 });
             }
@@ -2901,6 +2997,60 @@ jobs:
             }
 
             /* ===================================================================
+               In-app updates
+               =================================================================== */
+            async function autoCheckUpdates() {
+              if (!Updater.supported || !S.settings.autoUpdateCheck) return;
+              if (Date.now() - (S.settings.lastUpdateCheck || 0) < 6 * 3600 * 1000) return;
+              try {
+                const r = await Updater.check(APP_VERSION);
+                S.saveSettings({ lastUpdateCheck: Date.now() });
+                if (r.supported && r.available && r.latest !== S.settings.skippedVersion) {
+                  toast(`Feynos Notes ${r.latest} is available`, 'Update', () => runUpdate(r), 15000);
+                }
+              } catch (e) { /* offline - try again later */ }
+            }
+
+            async function runUpdate(info) {
+              if (P.isAndroid && !await Updater.canInstallApk()) {
+                const go = await openModal(`<h2>Allow updates</h2>
+                  <p class="sub">Android needs your OK once before Feynos Notes can install its own updates. Turn on <b>Allow from this source</b> on the next screen, come back, and tap Update again.</p>
+                  <div class="modal-actions"><button class="btn" data-x="no">Cancel</button><button class="btn primary" data-x="yes">Open setting</button></div>`,
+                  (m, done) => { m.querySelector('[data-x=no]').onclick = () => done(false); m.querySelector('[data-x=yes]').onclick = () => done(true); });
+                if (go) Updater.openInstallSettings();
+                return;
+              }
+              const size = info.size ? ` (${(info.size / 1048576).toFixed(1)} MB)` : '';
+              await openModal(`<h2>Update to ${esc(info.latest)}</h2>
+                <p class="sub" id="upStage">Downloading${size}…</p>
+                <div class="progress"><div id="upBar" style="width:0%"></div></div>
+                ${info.notes ? `<div class="hint" style="max-height:120px;overflow:auto;white-space:pre-wrap">${esc(info.notes)}</div>` : ''}
+                <div class="modal-actions"><button class="btn" data-x="skip">Skip this version</button><button class="btn" data-x="later">Later</button><button class="btn primary" data-x="go" hidden>Restart &amp; update</button></div>`,
+                (m, done) => {
+                  el.modal.dataset.kind = 'update';
+                  const stage = m.querySelector('#upStage'), bar = m.querySelector('#upBar'), go = m.querySelector('[data-x=go]');
+                  const live = () => el.modal.dataset.kind === 'update';
+                  m.querySelector('[data-x=later]').onclick = () => done();
+                  m.querySelector('[data-x=skip]').onclick = () => { S.saveSettings({ skippedVersion: info.latest }); done(); };
+                  go.onclick = async () => {
+                    go.disabled = true; stage.textContent = 'Saving and syncing your notes…';
+                    await flushSave(); await S.flush();
+                    if (S.syncOn) await Promise.race([Sync.syncNow(), new Promise(r => setTimeout(r, 8000))]);
+                    stage.textContent = P.isDesktop && /Win/i.test(navigator.userAgent) ? 'Installing - the app will reopen by itself…' : 'Installing - you may be asked for your password…';
+                    Updater.install();
+                  };
+                  Updater.download(p => { if (live()) { bar.style.width = p + '%'; stage.textContent = `Downloading${size}… ${p}%`; } })
+                    .then(r => {
+                      if (!live()) return;
+                      bar.style.width = '100%';
+                      if (r === 'ready') { stage.innerHTML = '<b style="color:var(--ok)">Downloaded.</b> Restart to finish updating. Your notes are saved first.'; go.hidden = false; }
+                      else { stage.innerHTML = 'Android\'s installer is open - tap <b>Update</b> there. Feynos Notes restarts on the new version.'; m.querySelector('[data-x=later]').textContent = 'Close'; }
+                    })
+                    .catch(err => { if (live()) stage.innerHTML = `<span style="color:var(--danger)">${esc(err.message || String(err))}</span>`; });
+                });
+            }
+
+            /* ===================================================================
                Wiring
                =================================================================== */
             function renderAll() { renderTree(); renderPages(); renderCrumbs(); }
@@ -2969,6 +3119,8 @@ jobs:
               startAutoBackup();
               setupSync();
               maybeRemind();
+              setTimeout(autoCheckUpdates, 8000);
+              setInterval(autoCheckUpdates, 3600 * 1000);
             })();
           })();
           FEYNOS_EOF
@@ -2992,6 +3144,45 @@ jobs:
 
           if (!app.requestSingleInstanceLock()) { app.quit(); }
 
+          /* ---------------- updates (GitHub Releases) ---------------- */
+          let autoUpdater = null;
+          try { ({ autoUpdater } = require('electron-updater')); } catch (e) { console.warn('electron-updater not available:', e.message); }
+          const newer = (a, b) => {
+            const pa = String(a).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+            const pb = String(b).replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
+            for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
+            return false;
+          };
+          function sendToPage(channel, data) { if (win && !win.isDestroyed()) win.webContents.send(channel, data); }
+          function setupUpdater() {
+            if (!autoUpdater) return;
+            autoUpdater.autoDownload = false;
+            autoUpdater.autoInstallOnAppQuit = true;
+            autoUpdater.on('download-progress', p => sendToPage('update-event', { type: 'progress', percent: Math.round(p.percent || 0) }));
+            autoUpdater.on('update-downloaded', info => sendToPage('update-event', { type: 'downloaded', version: info.version }));
+            autoUpdater.on('error', e => sendToPage('update-event', { type: 'error', message: String((e && e.message) || e).split('\n')[0] }));
+          }
+          ipcMain.handle('update:check', async () => {
+            const current = app.getVersion();
+            if (!autoUpdater) return { supported: false, current, reason: 'The updater is missing from this build.' };
+            if (!app.isPackaged) return { supported: false, current, reason: 'Updates only work in the installed app.' };
+            const r = await autoUpdater.checkForUpdates();
+            const info = r && r.updateInfo;
+            const latest = info ? info.version : current;
+            const notes = info && typeof info.releaseNotes === 'string' ? info.releaseNotes.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+            return { supported: true, current, latest, available: newer(latest, current), notes };
+          });
+          ipcMain.handle('update:download', async () => { await autoUpdater.downloadUpdate(); return true; });
+          ipcMain.handle('update:install', () => {
+            // the page has already saved and synced; skip the close handshake
+            allowClose = true;
+            setImmediate(() => autoUpdater.quitAndInstall(true, true));
+            return true;
+          });
+
+          let win = null;
+          let allowClose = false;
+
           const CONFIG_PATH = () => path.join(app.getPath('userData'), 'desktop-config.json');
           function readConfig() {
             try { return JSON.parse(fs.readFileSync(CONFIG_PATH(), 'utf8')); } catch { return { folders: [], window: null }; }
@@ -3004,8 +3195,6 @@ jobs:
           }
           let config = { folders: [], window: null };
 
-          let win = null;
-          let allowClose = false;
 
           function createWindow() {
             const saved = config.window || {};
@@ -3150,6 +3339,7 @@ jobs:
             config = readConfig();
             if (!Array.isArray(config.folders)) config.folders = [];
             Menu.setApplicationMenu(null);
+            setupUpdater();
             createWindow();
           });
           app.on('window-all-closed', () => app.quit());
@@ -3169,7 +3359,11 @@ jobs:
             writeBackup: (name, text, keep) => ipcRenderer.invoke('backup:write', String(name), String(text), Number(keep)),
             openExternal: url => ipcRenderer.send('open-external', String(url)),
             onCloseRequest: fn => ipcRenderer.on('close-request', () => fn()),
-            closeReady: () => ipcRenderer.send('close-ready')
+            closeReady: () => ipcRenderer.send('close-ready'),
+            checkUpdate: () => ipcRenderer.invoke('update:check'),
+            downloadUpdate: () => ipcRenderer.invoke('update:download'),
+            installUpdate: () => ipcRenderer.invoke('update:install'),
+            onUpdateEvent: fn => ipcRenderer.on('update-event', (_e, data) => fn(data))
           });
           FEYNOS_EOF
 
@@ -3286,13 +3480,16 @@ jobs:
           mkdir -p "$(dirname src/android/cap-entry.js)"
           cat > src/android/cap-entry.js <<'FEYNOS_EOF'
           // Bundled by esbuild into www/cap-bundle.js for the Android build only
-          import { Capacitor } from '@capacitor/core';
+          import { Capacitor, registerPlugin } from '@capacitor/core';
           import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
           import { Share } from '@capacitor/share';
           import { App } from '@capacitor/app';
           import { Browser } from '@capacitor/browser';
 
-          window.FeynosCap = { Capacitor, Filesystem, Directory, Encoding, Share, App, Browser };
+          // our own native plugin (android/native/ApkUpdaterPlugin.java)
+          const ApkUpdater = registerPlugin('ApkUpdater');
+
+          window.FeynosCap = { Capacitor, Filesystem, Directory, Encoding, Share, App, Browser, ApkUpdater };
           FEYNOS_EOF
 
           mkdir -p "$(dirname src/android/make_icons.py)"
@@ -3312,6 +3509,189 @@ jobs:
           # drop adaptive-icon XML so the launcher uses the PNGs above
           shutil.rmtree(os.path.join(res, "mipmap-anydpi-v26"), ignore_errors=True)
           print("icons written")
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/android/patch_android.py)"
+          cat > src/android/patch_android.py <<'FEYNOS_EOF'
+          # Adds the in-app updater to the generated Capacitor Android project
+          import os, re, shutil, sys
+          native, proj = sys.argv[1], sys.argv[2]
+          java = os.path.join(proj, 'app/src/main/java/com/feynos/notes')
+          os.makedirs(java, exist_ok=True)
+          for f in ('ApkUpdaterPlugin.java', 'UpdateFileProvider.java', 'MainActivity.java'):
+              shutil.copy(os.path.join(native, f), os.path.join(java, f))
+          xml = os.path.join(proj, 'app/src/main/res/xml')
+          os.makedirs(xml, exist_ok=True)
+          shutil.copy(os.path.join(native, 'update_paths.xml'), os.path.join(xml, 'update_paths.xml'))
+
+          mf = os.path.join(proj, 'app/src/main/AndroidManifest.xml')
+          s = open(mf, encoding='utf-8').read()
+          perm = '<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />'
+          if perm not in s:
+              s = s.replace('</manifest>', '    ' + perm + '\n</manifest>')
+          provider = '''        <provider
+                      android:name="com.feynos.notes.UpdateFileProvider"
+                      android:authorities="${applicationId}.updates"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_paths" />
+                  </provider>
+          '''
+          if 'UpdateFileProvider' not in s:
+              s = s.replace('</application>', provider + '    </application>')
+          open(mf, 'w', encoding='utf-8').write(s)
+          print('android updater added')
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/android/native/ApkUpdaterPlugin.java)"
+          cat > src/android/native/ApkUpdaterPlugin.java <<'FEYNOS_EOF'
+          package com.feynos.notes;
+
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.provider.Settings;
+          import androidx.core.content.FileProvider;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+
+          /** Downloads a new APK from GitHub Releases and hands it to the Android installer. */
+          @CapacitorPlugin(name = "ApkUpdater")
+          public class ApkUpdaterPlugin extends Plugin {
+
+              @PluginMethod
+              public void canInstall(PluginCall call) {
+                  boolean allowed = Build.VERSION.SDK_INT < 26 || getContext().getPackageManager().canRequestPackageInstalls();
+                  JSObject r = new JSObject();
+                  r.put("allowed", allowed);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void openInstallSettings(PluginCall call) {
+                  Intent i;
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getContext().getPackageName()));
+                  } else {
+                      i = new Intent(Settings.ACTION_SECURITY_SETTINGS);
+                  }
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  getContext().startActivity(i);
+                  call.resolve();
+              }
+
+              @PluginMethod
+              public void downloadAndInstall(PluginCall call) {
+                  final String url = call.getString("url");
+                  if (url == null || !url.startsWith("https://")) { call.reject("Invalid download address"); return; }
+                  new Thread(() -> {
+                      HttpURLConnection conn = null;
+                      try {
+                          File dir = new File(getContext().getCacheDir(), "updates");
+                          if (!dir.exists() && !dir.mkdirs()) throw new Exception("Can't create the download folder");
+                          File[] old = dir.listFiles();
+                          if (old != null) for (File f : old) f.delete();
+                          File out = new File(dir, "feynos-notes-update.apk");
+
+                          // follow GitHub's redirects to its download servers ourselves (they change host)
+                          String current = url;
+                          for (int hop = 0; hop < 6; hop++) {
+                              conn = (HttpURLConnection) new URL(current).openConnection();
+                              conn.setInstanceFollowRedirects(false);
+                              conn.setConnectTimeout(20000);
+                              conn.setReadTimeout(60000);
+                              conn.setRequestProperty("User-Agent", "FeynosNotes-Updater");
+                              int code = conn.getResponseCode();
+                              if (code >= 300 && code < 400) {
+                                  String loc = conn.getHeaderField("Location");
+                                  conn.disconnect();
+                                  if (loc == null || !loc.startsWith("https://")) throw new Exception("Bad redirect");
+                                  current = loc;
+                                  continue;
+                              }
+                              if (code != 200) throw new Exception("Download failed (HTTP " + code + ")");
+                              break;
+                          }
+
+                          long total = conn.getContentLengthLong();
+                          long done = 0;
+                          int lastPct = -1;
+                          try (InputStream in = conn.getInputStream(); OutputStream os = new FileOutputStream(out)) {
+                              byte[] buf = new byte[65536];
+                              int n;
+                              while ((n = in.read(buf)) > 0) {
+                                  os.write(buf, 0, n);
+                                  done += n;
+                                  if (total > 0) {
+                                      int pct = (int) (done * 100 / total);
+                                      if (pct != lastPct) {
+                                          lastPct = pct;
+                                          JSObject p = new JSObject();
+                                          p.put("percent", pct);
+                                          notifyListeners("downloadProgress", p);
+                                      }
+                                  }
+                              }
+                          }
+
+                          Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".updates", out);
+                          Intent install = new Intent(Intent.ACTION_VIEW);
+                          install.setDataAndType(uri, "application/vnd.android.package-archive");
+                          install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                          getContext().startActivity(install);
+                          call.resolve();
+                      } catch (Exception e) {
+                          call.reject(e.getMessage() != null ? e.getMessage() : "Update failed");
+                      } finally {
+                          if (conn != null) conn.disconnect();
+                      }
+                  }).start();
+              }
+          }
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/android/native/UpdateFileProvider.java)"
+          cat > src/android/native/UpdateFileProvider.java <<'FEYNOS_EOF'
+          package com.feynos.notes;
+
+          import androidx.core.content.FileProvider;
+
+          /** Separate provider so the updater doesn't touch Capacitor's own file sharing setup. */
+          public class UpdateFileProvider extends FileProvider {
+          }
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/android/native/MainActivity.java)"
+          cat > src/android/native/MainActivity.java <<'FEYNOS_EOF'
+          package com.feynos.notes;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(ApkUpdaterPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/android/native/update_paths.xml)"
+          cat > src/android/native/update_paths.xml <<'FEYNOS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <paths>
+              <cache-path name="updates" path="updates/" />
+          </paths>
           FEYNOS_EOF
 
           mkdir -p "$(dirname src/server/server.mjs)"
@@ -4355,7 +4735,8 @@ jobs:
           # ---- stage 1: build one2html (MIT, github.com/msiemens/one2html) for OneNote file import ----
           FROM rust:1-alpine AS one2html
           RUN apk add --no-cache musl-dev git
-          RUN cargo install --locked --root /out \
+          # (the default "backtrace" feature needs nightly Rust, so it's left out)
+          RUN cargo install --locked --root /out --no-default-features --features bin,native-fs,onepkg \
                 --git https://github.com/msiemens/one2html --rev 5beb00ee051793910736f8be3afeb27c108c247e one2html
 
           # ---- stage 2: the sync server ----
@@ -4559,6 +4940,7 @@ jobs:
           npx cap sync android
           pip install --quiet pillow
           python3 ../src/android/make_icons.py www/icon.png android/app/src/main/res
+          python3 ../src/android/patch_android.py ../src/android/native android
 
       - name: Set version
         shell: bash
@@ -4581,7 +4963,7 @@ jobs:
           mkdir -p ../../out
           if [ -n "$KS_B64" ]; then
             echo "Building release APK signed with your key"
-            ./gradlew assembleRelease --no-daemon
+            ./gradlew assembleRelease --no-daemon > gradle.log 2>&1 || { cat gradle.log; echo "::error title=Android build failed::$(grep -E 'error:|FAILURE|What went wrong|\.java:[0-9]+' gradle.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
             BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
             echo "$KS_B64" | base64 -d > release.jks
             "$BT/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
@@ -4590,7 +4972,7 @@ jobs:
             rm -f release.jks
           else
             echo "No signing secrets - building debug-signed APK"
-            ./gradlew assembleDebug --no-daemon
+            ./gradlew assembleDebug --no-daemon > gradle.log 2>&1 || { cat gradle.log; echo "::error title=Android build failed::$(grep -E 'error:|FAILURE|What went wrong|\.java:[0-9]+' gradle.log | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"; exit 1; }
             cp app/build/outputs/apk/debug/app-debug.apk "../../out/FeynosNotes-$APP_VERSION.apk"
           fi
           ls -la ../../out
@@ -4626,6 +5008,7 @@ jobs:
           cp -r ../src/www ./www
           mkdir -p build && cp www/icon.png build/icon.png
           npm pkg set version="$APP_VERSION"
+          npm install --save --no-audit --no-fund electron-updater
           npm install --save-dev --no-audit --no-fund electron electron-builder
           npx electron-builder --linux rpm --x64 --publish never > eb.log 2>&1 || {
             cat eb.log
@@ -4638,7 +5021,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: app/dist/*.rpm
+          path: |
+            app/dist/*.rpm
+            app/dist/latest-linux.yml
 
   windows:
     name: Windows installer
@@ -4666,6 +5051,7 @@ jobs:
           cp -r ../src/www ./www
           mkdir -p build && cp www/icon.png build/icon.png
           npm pkg set version="$APP_VERSION"
+          npm install --save --no-audit --no-fund electron-updater
           npm install --save-dev --no-audit --no-fund electron electron-builder
           npx electron-builder --win nsis --x64 --publish never > eb.log 2>&1 || {
             cat eb.log
@@ -4678,7 +5064,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: app/dist/*.exe
+          path: |
+            app/dist/*.exe
+            app/dist/*.exe.blockmap
+            app/dist/latest.yml
 
   server:
     name: Sync server image
