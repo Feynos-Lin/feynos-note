@@ -2758,7 +2758,7 @@ jobs:
         with:
           node-version: 22
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
@@ -2842,13 +2842,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq rpm
+          trap 'echo "::error title=Step failed::$BASH_COMMAND"' ERR
           mkdir app && cd app
           cp ../src/desktop/main.js ../src/desktop/preload.js ../src/desktop/package.json .
           cp -r ../src/www ./www
           mkdir -p build && cp www/icon.png build/icon.png
           npm pkg set version="$APP_VERSION"
           npm install --save-dev --no-audit --no-fund electron electron-builder
-          npx electron-builder --linux rpm --x64 --publish never
+          npx electron-builder --linux rpm --x64 --publish never > eb.log 2>&1 || {
+            cat eb.log
+            echo "::error title=electron-builder failed::$(tail -40 eb.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          }
+          cat eb.log
           ls -la dist
 
       - uses: actions/upload-artifact@v4
@@ -2876,13 +2882,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
+          trap 'echo "::error title=Step failed::$BASH_COMMAND"' ERR
           mkdir app && cd app
           cp ../src/desktop/main.js ../src/desktop/preload.js ../src/desktop/package.json .
           cp -r ../src/www ./www
           mkdir -p build && cp www/icon.png build/icon.png
           npm pkg set version="$APP_VERSION"
           npm install --save-dev --no-audit --no-fund electron electron-builder
-          npx electron-builder --win nsis --x64 --publish never
+          npx electron-builder --win nsis --x64 --publish never > eb.log 2>&1 || {
+            cat eb.log
+            echo "::error title=electron-builder failed::$(tail -40 eb.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          }
+          cat eb.log
           ls -la dist
 
       - uses: actions/upload-artifact@v4
