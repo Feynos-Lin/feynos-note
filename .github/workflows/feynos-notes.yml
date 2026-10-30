@@ -4,6 +4,7 @@
 #    * Android APK   (Capacitor)
 #    * Fedora .rpm   (Electron)
 #    * Windows installer .exe (Electron + NSIS)
+#    * Sync server Docker image -> ghcr.io/feynos-lin/feynos-note-sync
 #  and publishes them to a GitHub release.
 #
 #  All app source lives inside this file (step "Write app source").
@@ -20,6 +21,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   APP_VERSION: 1.0.${{ github.run_number }}
@@ -39,7 +41,7 @@ jobs:
           <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-          <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' data: blob:">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' data: blob: https: http:">
           <meta name="theme-color" content="#5b2a86">
           <title>Feynos Notes</title>
           <link rel="stylesheet" href="styles.css">
@@ -54,6 +56,10 @@ jobs:
                   <svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5z" fill="currentColor" opacity=".25"/><path d="M5 3h11l3 3v15H5zM8 8h8M8 12h8M8 16h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>
                 </div>
                 <span class="brand-name">Feynos Notes</span>
+                <button class="icon-btn sync-btn" id="btnSync" data-state="off" title="Sync" aria-label="Sync status" hidden>
+                  <svg viewBox="0 0 24 24" class="sync-ico"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.5 3v4.2h-4.2M5.5 21v-4.2h4.2"/></svg>
+                  <span class="sync-dot"></span>
+                </button>
                 <button class="icon-btn" id="btnSettings" title="Settings &amp; backup" aria-label="Settings and backup">
                   <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
                 </button>
@@ -191,6 +197,7 @@ jobs:
           <script src="cap-bundle.js"></script>
           <script src="platform.js"></script>
           <script src="store.js"></script>
+          <script src="sync.js"></script>
           <script src="sketch.js"></script>
           <script src="app.js"></script>
           </body>
@@ -584,6 +591,27 @@ jobs:
             .modal.wide { width: 100%; }
             .editor-head { padding-left: 4px; }
           }
+
+          /* ------------- sync status & import ------------- */
+          .sync-btn { position: relative; }
+          .sync-dot { position: absolute; right: 6px; bottom: 6px; width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--pane-2); background: var(--ok); }
+          .sync-btn[data-state="pending"] .sync-dot { background: var(--accent); }
+          .sync-btn[data-state="error"] .sync-dot, .sync-btn[data-state="signedout"] .sync-dot { background: var(--danger); }
+          .sync-btn[data-state="offline"] .sync-dot { background: var(--text-3); }
+          .sync-btn[data-state="syncing"] .sync-ico { animation: spin 1s linear infinite; }
+          .sync-btn[data-state="syncing"] .sync-dot { display: none; }
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .status-line { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); margin: 8px 0 0; flex-wrap: wrap; }
+          .status-line .err { color: var(--danger); }
+          .code-box { font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: 4px; text-align: center; padding: 16px; border-radius: 12px; background: var(--accent-soft); color: var(--accent-strong); margin: 12px 0; user-select: all; }
+          .nb-pick { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 9px; cursor: pointer; }
+          .nb-pick:hover { background: var(--hover); }
+          .nb-pick input { width: 18px; height: 18px; accent-color: var(--accent); }
+          .nb-pick .np-name { flex: 1; font-weight: 600; font-size: 14px; }
+          .nb-pick .np-sub { font-size: 12px; color: var(--text-3); }
+          .progress { height: 8px; border-radius: 4px; background: var(--pane-2); overflow: hidden; margin: 14px 0 8px; }
+          .progress > div { height: 100%; background: var(--accent); transition: width .3s; }
+          .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
           FEYNOS_EOF
 
           mkdir -p "$(dirname src/www/platform.js)"
@@ -668,8 +696,8 @@ jobs:
 
           mkdir -p "$(dirname src/www/store.js)"
           cat > src/www/store.js <<'FEYNOS_EOF'
-          /* Feynos Notes - storage layer (IndexedDB) and data model.
-             Structure:  meta  = { notebooks:[], sections:[], settings:{} }
+          /* Feynos Notes - storage layer (IndexedDB), data model and sync change-tracking.
+             Structure:  meta  = { notebooks:[], sections:[], settings:{}, sync:{} }
                          pages = one record per page (html can be large, so saved separately) */
           (function () {
             'use strict';
@@ -695,9 +723,16 @@ jobs:
               lastBackupNote: '',
               remindDays: 7            // android: remind to back up after N days, 0 = off
             };
+            const DEFAULT_SYNC = {
+              url: '', token: '', device: '', serverId: '',
+              lastSeq: 0, lastSyncAt: 0, lastError: '',
+              revs: {},        // record id -> server revision this device last saw
+              pending: {},     // record id -> { type, n } local changes not yet on the server
+              counter: 0
+            };
 
             let db = null;
-            const meta = { notebooks: [], sections: [], settings: { ...DEFAULT_SETTINGS } };
+            const meta = { notebooks: [], sections: [], settings: { ...DEFAULT_SETTINGS }, sync: { ...DEFAULT_SYNC }, onlySeed: false };
             const pages = new Map();
             let dirtySinceBackup = false;
             const listeners = new Set();
@@ -739,13 +774,15 @@ jobs:
                 meta.notebooks = m.notebooks || [];
                 meta.sections = m.sections || [];
                 meta.settings = { ...DEFAULT_SETTINGS, ...(m.settings || {}) };
+                meta.sync = { ...DEFAULT_SYNC, ...(m.sync || {}) };
+                meta.onlySeed = !!m.onlySeed;
                 dirtySinceBackup = !!m.dirtySinceBackup;
               }
               pages.clear();
               for (const p of all) pages.set(p.id, p);
 
               purgeOldBin();
-              if (!meta.notebooks.length) await seed();
+              if (!meta.notebooks.length && !syncOn()) await seed();
             }
 
             let metaTimer = null;
@@ -753,7 +790,8 @@ jobs:
               clearTimeout(metaTimer);
               const run = () => tx(['kv'], 'readwrite', t => {
                 t.objectStore('kv').put({
-                  notebooks: meta.notebooks, sections: meta.sections, settings: meta.settings, dirtySinceBackup
+                  notebooks: meta.notebooks, sections: meta.sections, settings: meta.settings,
+                  sync: meta.sync, onlySeed: meta.onlySeed, dirtySinceBackup
                 }, 'meta');
               }).catch(err => console.error('saveMeta', err));
               if (immediate) return run();
@@ -767,6 +805,14 @@ jobs:
               return tx(['pages'], 'readwrite', t => { t.objectStore('pages').delete(id); });
             }
 
+            /* ---------------- change tracking ---------------- */
+            const syncOn = () => !!(meta.sync.url && meta.sync.token);
+            function touch(type, id) {
+              meta.onlySeed = false;
+              if (!syncOn()) return;
+              meta.sync.counter = (meta.sync.counter || 0) + 1;
+              meta.sync.pending[id] = { type, n: meta.sync.counter };
+            }
             function markDirty() {
               dirtySinceBackup = true;
               saveMeta();
@@ -781,19 +827,20 @@ jobs:
               const welcome = `
           <h2>Welcome to Feynos Notes 👋</h2>
           <p>Your notes live in <b>notebooks</b>, which hold <b>sections</b>, which hold <b>pages</b> — just like OneNote.</p>
-          <ul class="todo"><li data-done="true">Open the app</li><li data-done="false">Create a notebook for something you care about</li><li data-done="false">Set up backups in <b>Settings</b> (the gear icon)</li></ul>
+          <ul class="todo"><li data-done="true">Open the app</li><li data-done="false">Create a notebook for something you care about</li><li data-done="false">Set up sync or backups in <b>Settings</b> (the gear icon)</li></ul>
           <h3>Things to try</h3>
           <ul><li>Tag a line <span class="tag tag-important" contenteditable="false">★ Important</span> or <span class="tag tag-idea" contenteditable="false">💡 Idea</span></li>
           <li>Insert a table, a picture, or a hand-drawn sketch from the toolbar</li>
           <li>Search every page at once from the box on the left</li>
           <li>Tap a page's ⋯ menu to make it a subpage or move it to another section</li></ul>
-          <blockquote>Backups are plain JSON files, so they're easy to keep in Google Drive or Proton Drive.</blockquote>`;
+          <blockquote>Bring your OneNote notebooks over from OneDrive in Settings → Sync.</blockquote>`;
               const p = addPage(s1.id, 'Welcome', true);
               p.html = welcome.trim();
               p.text = htmlToText(p.html);
               meta.settings.lastSectionId = s1.id;
               meta.settings.lastPageId = p.id;
               await savePageRecord(p);
+              meta.onlySeed = true;
               await saveMeta(true);
               dirtySinceBackup = false;
             }
@@ -802,9 +849,9 @@ jobs:
             function sortByOrder(a, b) { return (a.order || 0) - (b.order || 0); }
             function nextOrder(list) { return list.length ? Math.max(...list.map(x => x.order || 0)) + 1 : 0; }
 
-            const textDiv = typeof document !== 'undefined' ? document.createElement('div') : null;
+            const hasDom = typeof document !== 'undefined' && typeof document.createElement === 'function';
             function htmlToText(html) {
-              if (!textDiv) return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+              if (!hasDom) return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
               const tpl = document.createElement('template');
               tpl.innerHTML = html || '';
               // block-level elements should become spaces, not run together
@@ -818,21 +865,24 @@ jobs:
             function addNotebook(name, color, silent) {
               const nb = { id: uid(), name: name || 'New Notebook', color: color || COLORS[meta.notebooks.length % COLORS.length], order: nextOrder(meta.notebooks), collapsed: false, updated: now() };
               meta.notebooks.push(nb);
+              touch('notebook', nb.id);
               if (!silent) markDirty();
               return nb;
             }
             function updateNotebook(id, patch) {
               const nb = getNotebook(id); if (!nb) return;
+              if ('collapsed' in patch && Object.keys(patch).length === 1) { nb.collapsed = patch.collapsed; saveMeta(); return nb; } // this device's UI only
               Object.assign(nb, patch, { updated: now() });
-              if ('collapsed' in patch && Object.keys(patch).length === 1) { saveMeta(); return nb; } // UI state only
+              touch('notebook', id);
               markDirty(); return nb;
             }
             function deleteNotebook(id) {
               for (const s of sections(id)) deleteSection(s.id, true);
               meta.notebooks = meta.notebooks.filter(n => n.id !== id);
+              touch('notebook', id);
               markDirty();
             }
-            function moveNotebook(id, dir) { moveInList(notebooks(), id, dir); markDirty(); }
+            function moveNotebook(id, dir) { moveInList(notebooks(), id, dir, x => touch('notebook', x.id)); markDirty(); }
 
             /* ---------------- sections ---------------- */
             function sections(notebookId) { return meta.sections.filter(s => s.notebookId === notebookId).sort(sortByOrder); }
@@ -841,21 +891,24 @@ jobs:
               const siblings = sections(notebookId);
               const s = { id: uid(), notebookId, name: name || 'New Section', color: color || COLORS[(siblings.length + 1) % COLORS.length], order: nextOrder(siblings), updated: now() };
               meta.sections.push(s);
+              touch('section', s.id);
               if (!silent) markDirty();
               return s;
             }
-            function updateSection(id, patch) { const s = getSection(id); if (!s) return; Object.assign(s, patch, { updated: now() }); markDirty(); return s; }
+            function updateSection(id, patch) { const s = getSection(id); if (!s) return; Object.assign(s, patch, { updated: now() }); touch('section', id); markDirty(); return s; }
             function deleteSection(id, silent) {
               // pages go to the recycle bin, remembering where they came from
               const s = getSection(id);
               for (const p of pagesIn(id)) trashPage(p.id, true, s);
               meta.sections = meta.sections.filter(x => x.id !== id);
+              touch('section', id);
               if (!silent) markDirty();
             }
-            function moveSection(id, dir) { const s = getSection(id); moveInList(sections(s.notebookId), id, dir); markDirty(); }
+            function moveSection(id, dir) { const s = getSection(id); moveInList(sections(s.notebookId), id, dir, x => touch('section', x.id)); markDirty(); }
             function moveSectionToNotebook(id, notebookId) {
               const s = getSection(id); if (!s) return;
               s.notebookId = notebookId; s.order = nextOrder(sections(notebookId)); s.updated = now();
+              touch('section', id);
               markDirty();
             }
 
@@ -864,6 +917,7 @@ jobs:
               return [...pages.values()].filter(p => p.sectionId === sectionId && !p.deleted).sort(sortByOrder);
             }
             function getPage(id) { return pages.get(id); }
+            function savePage(p) { touch('page', p.id); return savePageRecord(p); }
             function addPage(sectionId, title, silent, afterId, level) {
               const list = pagesIn(sectionId);
               let order = nextOrder(list);
@@ -873,13 +927,13 @@ jobs:
                 if (idx >= 0) {
                   let end = idx;
                   while (end + 1 < list.length && list[end + 1].level > 0 && list[idx].level === 0) end++;
-                  list.forEach((p, i) => { if (i > end) { p.order += 1; savePageRecord(p); } });
+                  list.forEach((p, i) => { if (i > end) { p.order += 1; p.updated = now(); savePage(p); } });
                   order = (list[end].order || 0) + 1;
                 }
               }
               const p = { id: uid(), sectionId, title: title || '', html: '', text: '', level: level || 0, order, created: now(), updated: now(), deleted: null };
               pages.set(p.id, p);
-              savePageRecord(p);
+              savePage(p);
               if (!silent) markDirty();
               return p;
             }
@@ -889,33 +943,33 @@ jobs:
               if ('html' in patch) p.text = htmlToText(p.html);
               p.updated = now();
               markDirty();
-              return savePageRecord(p);
+              return savePage(p);
             }
-            function setPageLevel(id, level) { const p = pages.get(id); if (!p) return; p.level = level; p.updated = now(); savePageRecord(p); markDirty(); }
+            function setPageLevel(id, level) { const p = pages.get(id); if (!p) return; p.level = level; p.updated = now(); savePage(p); markDirty(); }
             function movePage(id, dir) {
               const p = pages.get(id); if (!p) return;
-              moveInList(pagesIn(p.sectionId), id, dir, x => savePageRecord(x));
+              moveInList(pagesIn(p.sectionId), id, dir, x => { x.updated = now(); savePage(x); });
               markDirty();
             }
             function movePageToSection(id, sectionId) {
               const p = pages.get(id); if (!p) return;
               p.sectionId = sectionId; p.level = 0; p.order = nextOrder(pagesIn(sectionId)); p.updated = now();
-              savePageRecord(p); markDirty();
+              savePage(p); markDirty();
             }
             function duplicatePage(id) {
               const src = pages.get(id); if (!src) return null;
               const p = addPage(src.sectionId, (src.title || 'Untitled') + ' (copy)', true, src.id, src.level);
               p.html = src.html; p.text = src.text;
-              savePageRecord(p); markDirty();
+              savePage(p); markDirty();
               return p;
             }
             function trashPage(id, silent, sectionInfo) {
               const p = pages.get(id); if (!p) return;
               const sec = sectionInfo || getSection(p.sectionId);
               const nb = sec ? getNotebook(sec.notebookId) : null;
-              p.deleted = now();
+              p.deleted = now(); p.updated = now();
               p.deletedFrom = (nb ? nb.name + ' › ' : '') + (sec ? sec.name : '');
-              savePageRecord(p);
+              savePage(p);
               if (!silent) markDirty();
             }
             function binPages() { return [...pages.values()].filter(p => p.deleted).sort((a, b) => b.deleted - a.deleted); }
@@ -928,15 +982,15 @@ jobs:
                 sec = sections(nb.id)[0] || addSection(nb.id, 'Restored', null, true);
                 p.sectionId = sec.id;
               }
-              p.deleted = null; p.level = 0; p.order = nextOrder(pagesIn(sec.id));
-              savePageRecord(p); markDirty();
+              p.deleted = null; p.level = 0; p.order = nextOrder(pagesIn(sec.id)); p.updated = now();
+              savePage(p); markDirty();
               return p;
             }
-            function purgePage(id) { pages.delete(id); deletePageRecord(id); markDirty(); }
-            function emptyBin() { for (const p of binPages()) { pages.delete(p.id); deletePageRecord(p.id); } markDirty(); }
+            function purgePage(id) { pages.delete(id); deletePageRecord(id); touch('page', id); markDirty(); }
+            function emptyBin() { for (const p of binPages()) { pages.delete(p.id); deletePageRecord(p.id); touch('page', p.id); } markDirty(); }
             function purgeOldBin() {
               const cutoff = now() - 60 * 24 * 3600 * 1000; // 60 days
-              for (const p of [...pages.values()]) if (p.deleted && p.deleted < cutoff) { pages.delete(p.id); deletePageRecord(p.id); }
+              for (const p of [...pages.values()]) if (p.deleted && p.deleted < cutoff) { pages.delete(p.id); deletePageRecord(p.id); touch('page', p.id); }
             }
 
             function moveInList(list, id, dir, onChange) {
@@ -944,8 +998,8 @@ jobs:
               const j = i + dir;
               if (i < 0 || j < 0 || j >= list.length) return;
               [list[i], list[j]] = [list[j], list[i]];
-              list.forEach((x, k) => { if (x.order !== k) { x.order = k; if (onChange) onChange(x); } });
-              if (!onChange) saveMeta();
+              list.forEach((x, k) => { if (x.order !== k) { x.order = k; x.updated = now(); if (onChange) onChange(x); } });
+              saveMeta();
             }
 
             /* ---------------- search ---------------- */
@@ -1005,6 +1059,10 @@ jobs:
               const stats = { notebooks: 0, sections: 0, pages: 0 };
 
               if (mode === 'replace') {
+                // everything currently here disappears - tell the server too
+                for (const nb of meta.notebooks) touch('notebook', nb.id);
+                for (const s of meta.sections) touch('section', s.id);
+                for (const id of pages.keys()) touch('page', id);
                 await tx(['pages'], 'readwrite', t => { t.objectStore('pages').clear(); });
                 pages.clear();
                 meta.notebooks = []; meta.sections = [];
@@ -1015,8 +1073,8 @@ jobs:
                 if ((item.updated || 0) > (arr[i].updated || 0)) { arr[i] = item; return true; }
                 return false;
               };
-              for (const nb of data.notebooks) if (nb && nb.id && upsert(meta.notebooks, { ...nb })) stats.notebooks++;
-              for (const s of data.sections) if (s && s.id && upsert(meta.sections, { ...s })) stats.sections++;
+              for (const nb of data.notebooks) if (nb && nb.id && upsert(meta.notebooks, { ...nb })) { stats.notebooks++; touch('notebook', nb.id); }
+              for (const s of data.sections) if (s && s.id && upsert(meta.sections, { ...s })) { stats.sections++; touch('section', s.id); }
 
               const toSave = [];
               for (const raw of data.pages) {
@@ -1024,15 +1082,89 @@ jobs:
                 const p = { ...raw, html: clean(raw.html) };
                 p.text = htmlToText(p.html);
                 const cur = pages.get(p.id);
-                if (!cur || (p.updated || 0) > (cur.updated || 0)) { pages.set(p.id, p); toSave.push(p); stats.pages++; }
+                if (!cur || (p.updated || 0) > (cur.updated || 0)) { pages.set(p.id, p); toSave.push(p); touch('page', p.id); stats.pages++; }
               }
               await tx(['pages'], 'readwrite', t => { const st = t.objectStore('pages'); for (const p of toSave) st.put(p); });
 
               if (mode === 'replace' && data.settings) Object.assign(meta.settings, data.settings);
               if (!meta.notebooks.length) await seed();
+              meta.onlySeed = false;
               dirtySinceBackup = mode !== 'replace';
               await saveMeta(true);
+              listeners.forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
               return stats;
+            }
+
+            /* ---------------- sync support ---------------- */
+            const stripLocal = nb => { const { collapsed, ...rest } = nb; return rest; };
+
+            /* every local change the server hasn't seen, as records */
+            function collectPending() {
+              const out = [];
+              for (const [id, info] of Object.entries(meta.sync.pending)) {
+                let data = null;
+                if (info.type === 'notebook') { const nb = getNotebook(id); data = nb ? stripLocal(nb) : null; }
+                else if (info.type === 'section') data = getSection(id) || null;
+                else if (info.type === 'page') { const p = pages.get(id); data = p ? { ...p } : null; if (data) delete data.text; }
+                out.push({
+                  type: info.type, id, n: info.n, base: meta.sync.revs[id] || 0,
+                  updated: data ? (data.updated || now()) : now(), deleted: !data, data
+                });
+              }
+              return out;
+            }
+            /* forget pending changes the server accepted, unless they changed again meanwhile */
+            function ackPending(sent) {
+              for (const c of sent) { const cur = meta.sync.pending[c.id]; if (cur && cur.n === c.n) delete meta.sync.pending[c.id]; }
+            }
+            /* apply records pulled from the server; returns what changed for the UI */
+            async function applyRemote(records) {
+              const changed = { pages: new Set(), structure: false };
+              const toSave = []; const toDelete = [];
+              for (const r of records) {
+                meta.sync.revs[r.id] = r.rev;
+                if (meta.sync.pending[r.id]) continue; // newer local edit wins until it's pushed
+                if (r.type === 'notebook') {
+                  const i = meta.notebooks.findIndex(n => n.id === r.id);
+                  if (r.deleted) { if (i >= 0) meta.notebooks.splice(i, 1); }
+                  else {
+                    const nb = { ...r.data, collapsed: i >= 0 ? meta.notebooks[i].collapsed : false };
+                    if (i >= 0) meta.notebooks[i] = nb; else meta.notebooks.push(nb);
+                  }
+                  changed.structure = true;
+                } else if (r.type === 'section') {
+                  const i = meta.sections.findIndex(s => s.id === r.id);
+                  if (r.deleted) { if (i >= 0) meta.sections.splice(i, 1); }
+                  else if (i >= 0) meta.sections[i] = { ...r.data }; else meta.sections.push({ ...r.data });
+                  changed.structure = true;
+                } else if (r.type === 'page') {
+                  if (r.deleted) { if (pages.has(r.id)) { pages.delete(r.id); toDelete.push(r.id); } }
+                  else {
+                    const p = { ...r.data, id: r.id };
+                    p.text = htmlToText(p.html);
+                    pages.set(r.id, p); toSave.push(p);
+                  }
+                  changed.pages.add(r.id);
+                }
+              }
+              if (toSave.length || toDelete.length) {
+                await tx(['pages'], 'readwrite', t => { const st = t.objectStore('pages'); for (const p of toSave) st.put(p); for (const id of toDelete) st.delete(id); });
+              }
+              return changed;
+            }
+            /* first connection: queue everything, or drop the untouched starter notebook if the server has notes */
+            async function prepareFirstSync(serverHasNotes) {
+              meta.sync.revs = {}; meta.sync.pending = {}; meta.sync.lastSeq = 0;
+              if (serverHasNotes && meta.onlySeed) {
+                await tx(['pages'], 'readwrite', t => { t.objectStore('pages').clear(); });
+                pages.clear(); meta.notebooks = []; meta.sections = [];
+              } else {
+                for (const nb of meta.notebooks) touch('notebook', nb.id);
+                for (const s of meta.sections) touch('section', s.id);
+                for (const id of pages.keys()) touch('page', id);
+              }
+              meta.onlySeed = false;
+              await saveMeta(true);
             }
 
             window.Store = {
@@ -1046,7 +1178,200 @@ jobs:
               pagesIn, getPage, addPage, updatePage, setPageLevel, movePage, movePageToSection, duplicatePage,
               trashPage, binPages, restorePage, purgePage, emptyBin,
               search, exportData, importData, validateBackup, backupFileName, markBackedUp, htmlToText,
+              // sync
+              get sync() { return meta.sync; },
+              get syncOn() { return syncOn(); },
+              setSync(patch) { Object.assign(meta.sync, patch || {}); return saveMeta(true); },
+              resetSync() { meta.sync = { ...DEFAULT_SYNC, revs: {}, pending: {} }; return saveMeta(true); },
+              get pendingCount() { return Object.keys(meta.sync.pending).length; },
+              collectPending, ackPending, applyRemote, prepareFirstSync,
+              ensureSeed: async () => { if (!meta.notebooks.length) await seed(); },
               flush() { return saveMeta(true); }
+            };
+          })();
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/www/sync.js)"
+          cat > src/www/sync.js <<'FEYNOS_EOF'
+          /* Feynos Notes - sync with a self-hosted Feynos Notes sync server (works behind reverse proxies) */
+          (function () {
+            'use strict';
+            const S = window.Store;
+
+            let running = false, again = false, timer = null, started = false;
+            let state = 'off', stateMsg = '';
+            const hooks = { beforeSync: async () => {}, onApplied: () => {}, onStatus: () => {}, onConflicts: () => {}, onSignedOut: () => {} };
+
+            function setState(s, msg) { state = s; stateMsg = msg || ''; hooks.onStatus(state, stateMsg); }
+
+            function normUrl(u) {
+              u = String(u || '').trim();
+              if (!u) return '';
+              if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+              try { const x = new URL(u); x.hash = ''; x.search = ''; return x.toString().replace(/\/+$/, ''); } catch (e) { return ''; }
+            }
+
+            async function gzipBlob(str) {
+              if (typeof CompressionStream === 'undefined' || str.length < 4096) return null;
+              try { return await new Response(new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'))).blob(); } catch (e) { return null; }
+            }
+
+            class SyncError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
+
+            async function api(base, path, body, token, timeoutMs) {
+              const ctrl = new AbortController();
+              const to = setTimeout(() => ctrl.abort(), timeoutMs || 120000);
+              const headers = { Accept: 'application/json' };
+              if (token) headers.Authorization = 'Bearer ' + token;
+              let payload;
+              if (body !== undefined) {
+                const json = JSON.stringify(body);
+                const gz = await gzipBlob(json);
+                headers['Content-Type'] = 'application/json';
+                if (gz) { headers['Content-Encoding'] = 'gzip'; payload = gz; } else payload = json;
+              }
+              let res;
+              try {
+                res = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: payload, signal: ctrl.signal, cache: 'no-store', credentials: 'omit' });
+              } catch (e) {
+                clearTimeout(to);
+                if (e.name === 'AbortError') throw new SyncError('The server took too long to answer.', 'timeout');
+                throw new SyncError(navigator.onLine === false ? "You're offline." : "Can't reach the server. Check the address, that the container is running, and your reverse proxy/HTTPS certificate.", 'network');
+              }
+              clearTimeout(to);
+              const ct = res.headers.get('content-type') || '';
+              if (res.status === 413) throw new SyncError('Your reverse proxy rejected a large upload. Raise its upload limit (for Nginx: client_max_body_size 200m).', 'too-large');
+              if (!ct.includes('application/json')) {
+                if (res.status === 502 || res.status === 503 || res.status === 504) throw new SyncError(`The reverse proxy couldn't reach the sync container (HTTP ${res.status}).`, 'proxy');
+                throw new SyncError(`That address doesn't look like a Feynos Notes sync server (HTTP ${res.status}). Check the address and any sub-path in your reverse proxy.`, 'not-server');
+              }
+              const data = await res.json();
+              if (res.status === 401 && token) throw new SyncError(data.error || 'Signed out', 'auth');
+              if (!res.ok || data.ok === false) throw new SyncError(data.error || ('HTTP ' + res.status), 'server');
+              return data;
+            }
+
+            /* ---------------- connect / disconnect ---------------- */
+            async function connect(url, password, device) {
+              const base = normUrl(url);
+              if (!base) throw new SyncError('Enter the server address, e.g. https://notes.example.com');
+              const health = await api(base, '/api/health', undefined, null, 20000);
+              if (health.app !== 'feynos-notes-sync') throw new SyncError("That address answered, but it isn't a Feynos Notes sync server.");
+              const login = await api(base, '/api/login', { password, device }, null, 20000);
+              await S.setSync({ url: base, token: login.token, device, serverId: login.serverId, lastError: '' });
+              await S.prepareFirstSync(login.count > 0);
+              start();
+              await syncNow();
+              if (!S.notebooks().length) { await S.ensureSeed(); await syncNow(); }
+              return { pulled: login.count };
+            }
+
+            async function disconnect() {
+              const sy = S.sync;
+              try { if (sy.url && sy.token) await api(sy.url, '/api/logout', {}, sy.token, 8000); } catch (e) { /* offline is fine */ }
+              await S.resetSync();
+              setState('off');
+            }
+
+            /* ---------------- the sync round ---------------- */
+            const BATCH_BYTES = 4 * 1024 * 1024;
+            function batches(changes) {
+              const out = []; let cur = []; let size = 0;
+              for (const c of changes) {
+                const sz = c.data ? (c.data.html || '').length + 500 : 200;
+                if (cur.length && size + sz > BATCH_BYTES) { out.push(cur); cur = []; size = 0; }
+                cur.push(c); size += sz;
+              }
+              if (cur.length) out.push(cur);
+              return out.length ? out : [[]];
+            }
+            const merge = (a, b) => { b.pages.forEach(x => a.pages.add(x)); a.structure = a.structure || b.structure; };
+
+            async function syncNow() {
+              if (!S.syncOn) { setState('off'); return; }
+              if (running) { again = true; return; }
+              running = true; again = false;
+              clearTimeout(timer);
+              setState('syncing');
+              const sy = S.sync;
+              const changed = { pages: new Set(), structure: false };
+              let conflicts = 0;
+              try {
+                await hooks.beforeSync();
+                let since = sy.lastSeq || 0;
+                const groups = batches(S.collectPending());
+                let resp = null;
+                for (let i = 0; i < groups.length; i++) {
+                  const last = i === groups.length - 1;
+                  const sent = groups[i];
+                  resp = await api(sy.url, '/api/sync', {
+                    since, pull: last,
+                    changes: sent.map(c => ({ type: c.type, id: c.id, base: c.base, updated: c.updated, deleted: c.deleted, data: c.data }))
+                  }, sy.token, 5 * 60000);
+                  if (sy.serverId && resp.serverId !== sy.serverId) {
+                    // the server was wiped or replaced: send it everything we have
+                    await S.setSync({ serverId: resp.serverId });
+                    await S.prepareFirstSync(false);
+                    again = true;
+                    throw new SyncError('Server changed - re-uploading notes', 'reset');
+                  }
+                  S.ackPending(sent);
+                  conflicts += (resp.results || []).filter(r => r.status === 'conflict').length;
+                  if (last) { merge(changed, await S.applyRemote(resp.changes || [])); since = resp.seq; }
+                }
+                while (resp && resp.more) {
+                  resp = await api(sy.url, '/api/sync', { since, changes: [] }, sy.token, 5 * 60000);
+                  merge(changed, await S.applyRemote(resp.changes || []));
+                  since = resp.seq;
+                }
+                await S.setSync({ lastSeq: since, lastSyncAt: Date.now(), lastError: '' });
+                if (changed.pages.size || changed.structure) hooks.onApplied(changed);
+                if (conflicts) hooks.onConflicts(conflicts);
+                setState(S.pendingCount ? 'pending' : 'idle');
+              } catch (e) {
+                if (e.code === 'reset') { setState('syncing'); }
+                else {
+                  await S.setSync({ lastError: e.message });
+                  if (e.code === 'auth') { await S.setSync({ token: '' }); setState('signedout', e.message); hooks.onSignedOut(); }
+                  else setState(e.code === 'network' && navigator.onLine === false ? 'offline' : 'error', e.message);
+                }
+              } finally {
+                running = false;
+                if (again && S.syncOn) schedule(400);
+              }
+            }
+
+            function schedule(ms) {
+              if (!S.syncOn) return;
+              clearTimeout(timer);
+              timer = setTimeout(syncNow, ms == null ? 2000 : ms);
+            }
+
+            function start() {
+              if (started) return;
+              started = true;
+              S.onChange(() => { if (S.syncOn) { setState('pending'); schedule(2000); } });
+              setInterval(() => { if (S.syncOn && document.visibilityState === 'visible' && !running) syncNow(); }, 20000);
+              document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') schedule(300); });
+              window.addEventListener('online', () => schedule(300));
+              window.addEventListener('focus', () => schedule(500));
+            }
+
+            /* ---------------- OneNote import (runs on the server) ---------------- */
+            const imp = (path, body) => { const sy = S.sync; return api(sy.url, '/api/import/onenote' + path, body, sy.token, 30000); };
+
+            window.Sync = {
+              hooks,
+              normUrl,
+              connect, disconnect, syncNow, schedule,
+              start() { if (S.syncOn) { start(); syncNow(); } else setState(S.sync.url ? 'signedout' : 'off'); },
+              get state() { return state; },
+              get message() { return stateMsg; },
+              importStatus: () => imp('/status'),
+              importStart: () => imp('/start', {}),
+              importChoose: ids => imp('/choose', { ids }),
+              importCancel: () => imp('/cancel', {}),
+              importSignOut: () => imp('/signout', {})
             };
           })();
           FEYNOS_EOF
@@ -1282,6 +1607,7 @@ jobs:
             function openModal(html, onMount, wide) {
               closeMenu(); hideChip();
               if (modalResolve) { const r = modalResolve; modalResolve = null; r(null); }
+              delete el.modal.dataset.kind;
               el.modal.className = 'modal' + (wide ? ' wide' : '');
               el.modal.innerHTML = html;
               el.modalRoot.hidden = false;
@@ -2111,6 +2437,7 @@ jobs:
 
               await openModal(`
                 <h2>Settings</h2><p class="sub">Feynos Notes ${esc(APP_VERSION)} · ${P.isDesktop ? 'Desktop' : P.isAndroid ? 'Android' : 'Browser'}</p>
+                ${syncSectionHtml()}
                 ${P.isDesktop ? backupDesktop : backupMobile}
                 <div class="settings-section">
                   <h3>${ICON.restore} Restore</h3>
@@ -2153,6 +2480,7 @@ jobs:
                   } else {
                     m.querySelector('#setRemind').onchange = e => S.saveSettings({ remindDays: +e.target.value });
                   }
+                  wireSyncSection(m);
                   if (focusBackup) m.querySelector('#backupSection').scrollIntoView({ block: 'nearest' });
                 });
             }
@@ -2235,6 +2563,7 @@ jobs:
               P.onCloseRequest(async () => {
                 try {
                   await flushSave(); await S.flush();
+                  if (S.syncOn) await Promise.race([Sync.syncNow(), new Promise(r => setTimeout(r, 6000))]);
                   if (S.settings.backupOnClose && S.isDirty && (await P.listFolders()).length) await backupNow('close');
                 } finally { P.closeReady(); }
               });
@@ -2247,6 +2576,203 @@ jobs:
               if (!st.remindDays || !S.isDirty) return;
               if (Date.now() - (st.lastBackupAt || 0) < st.remindDays * 86400000) return;
               setTimeout(() => toast(st.lastBackupAt ? `Last backup was ${timeAgo(st.lastBackupAt)}` : "Your notes haven't been backed up yet", 'Back up', () => backupNow('manual')), 1500);
+            }
+
+            /* ===================================================================
+               Sync with your own server + OneNote import
+               =================================================================== */
+            const syncBtn = $('#btnSync');
+            const SYNC_LABEL = { off: 'Sync is off', idle: 'Synced', pending: 'Changes waiting to sync', syncing: 'Syncing…', error: 'Sync problem', offline: 'Offline - will sync later', signedout: 'Signed out of sync' };
+            function defaultDeviceName() {
+              if (P.isAndroid) return 'Android phone';
+              if (P.isDesktop) return /Win/i.test(navigator.userAgent) ? 'Windows PC' : 'Fedora PC';
+              return 'Browser';
+            }
+            function updateSyncButton(st, msg) {
+              syncBtn.hidden = !S.sync.url;
+              syncBtn.dataset.state = st;
+              syncBtn.title = SYNC_LABEL[st] + (msg ? ' - ' + msg : '') + (S.sync.lastSyncAt ? `\nLast synced ${timeAgo(S.sync.lastSyncAt)}` : '');
+              const live = el.modal.querySelector('#syncStatus');
+              if (live) live.innerHTML = syncStatusText();
+            }
+            function syncStatusText() {
+              const sy = S.sync;
+              const st = Sync.state;
+              let t = `<b>${esc(SYNC_LABEL[st] || st)}</b>`;
+              if (sy.lastSyncAt) t += ` · last synced ${timeAgo(sy.lastSyncAt)}`;
+              if (S.pendingCount && st !== 'syncing') t += ` · ${S.pendingCount} change${S.pendingCount === 1 ? '' : 's'} waiting`;
+              if (sy.lastError && (st === 'error' || st === 'signedout' || st === 'offline')) t += `<br><span class="err">${esc(sy.lastError)}</span>`;
+              return t;
+            }
+
+            function setupSync() {
+              Sync.hooks.beforeSync = async () => { await flushSave(); await S.flush(); };
+              Sync.hooks.onStatus = updateSyncButton;
+              Sync.hooks.onConflicts = n => toast(`${n} page${n === 1 ? ' was' : 's were'} edited on two devices - both versions were kept (look for “conflict copy”)`, null, null, 7000);
+              Sync.hooks.onSignedOut = () => toast('Sync signed out', 'Sign in', () => openSettings());
+              Sync.hooks.onApplied = changed => {
+                if (state.sectionId && !S.getSection(state.sectionId)) { state.sectionId = null; pickDefaultSection(); }
+                const cur = state.pageId && S.getPage(state.pageId);
+                if (state.pageId && changed.pages.has(state.pageId)) {
+                  if (!cur || cur.deleted || cur.sectionId !== state.sectionId) {
+                    const first = state.sectionId && S.pagesIn(state.sectionId)[0];
+                    openPage(first ? first.id : null, false);
+                  } else if (!state.pendingSave && el.editor.innerHTML !== sanitize(cur.html)) {
+                    const top = el.scroll.scrollTop;
+                    const hadFocus = document.activeElement === el.editor;
+                    el.editor.innerHTML = sanitize(cur.html); normalizeTodos();
+                    if (document.activeElement !== el.title) el.title.value = cur.title || '';
+                    renderMeta(cur); el.scroll.scrollTop = top;
+                    if (hadFocus) placeCaretAtStart(el.editor);
+                  }
+                } else if (!state.pageId && state.sectionId) {
+                  const first = S.pagesIn(state.sectionId)[0]; if (first) openPage(first.id, false);
+                }
+                renderTree(); renderPages(); renderCrumbs();
+              };
+              syncBtn.onclick = () => {
+                if (Sync.state === 'signedout' || Sync.state === 'off') openSettings(); else { Sync.syncNow(); if (Sync.state === 'error') toast(S.sync.lastError || 'Sync problem'); }
+              };
+              updateSyncButton(S.syncOn ? 'idle' : (S.sync.url ? 'signedout' : 'off'));
+              Sync.start();
+            }
+
+            function syncSectionHtml() {
+              const sy = S.sync;
+              const icon = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9"/><path d="M18.5 3v4.2h-4.2M5.5 21v-4.2h4.2"/></svg>';
+              if (S.syncOn) return `
+                <div class="settings-section" id="syncSection">
+                  <h3>${icon} Sync</h3>
+                  <p class="hint" style="margin-bottom:6px">Connected to <b>${esc(sy.url)}</b> as <b>${esc(sy.device)}</b>. Changes sync automatically on every device signed in to this server.</p>
+                  <div class="status-line" id="syncStatus">${syncStatusText()}</div>
+                  <div class="row-inline" style="margin-top:12px">
+                    <button class="btn primary" id="btnSyncNow">Sync now</button>
+                    <button class="btn" id="btnImportOneNote">Import from OneNote (OneDrive)…</button>
+                    <button class="btn danger" id="btnSyncOff">Disconnect</button>
+                  </div>
+                </div>`;
+              return `
+                <div class="settings-section" id="syncSection">
+                  <h3>${icon} Sync with your server</h3>
+                  <p class="hint">Connect to your Feynos Notes sync container to keep every device up to date automatically. Use the address your reverse proxy serves it on (e.g. <b>https://notes.example.com</b> or <b>https://example.com/notes</b>), or the container directly on your network. Signing in also unlocks importing your OneNote notebooks from OneDrive.</p>
+                  <div class="field"><label for="syUrl">Server address</label><input id="syUrl" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://notes.example.com" value="${esc(sy.url)}"></div>
+                  <div class="row-inline">
+                    <div class="field"><label for="syPass">Password</label><input id="syPass" type="password" autocomplete="current-password" style="height:40px;border-radius:9px;border:1px solid var(--line-strong);background:var(--paper);color:var(--text);padding:0 12px;font:inherit"></div>
+                    <div class="field"><label for="syDev">This device's name</label><input id="syDev" type="text" value="${esc(sy.device || defaultDeviceName())}" maxlength="40"></div>
+                  </div>
+                  <div class="row-inline" style="align-items:center"><button class="btn primary" id="btnSyncConnect">Connect</button><span class="hint" id="syMsg">${sy.url && sy.lastError ? '<span style="color:var(--danger)">' + esc(sy.lastError) + '</span>' : ''}</span></div>
+                </div>`;
+            }
+
+            function wireSyncSection(m) {
+              const q = sel => m.querySelector(sel);
+              if (q('#btnSyncNow')) {
+                q('#btnSyncNow').onclick = () => Sync.syncNow();
+                q('#btnImportOneNote').onclick = () => openImport();
+                q('#btnSyncOff').onclick = async () => {
+                  if (!await confirmDialog('Disconnect sync?', 'Your notes stay on this device, but changes will no longer sync until you connect again.', 'Disconnect', true)) return;
+                  await Sync.disconnect(); updateSyncButton('off'); toast('Sync disconnected');
+                };
+                return;
+              }
+              const go = async () => {
+                const btn = q('#btnSyncConnect'); const msg = q('#syMsg');
+                btn.disabled = true; msg.textContent = 'Connecting…';
+                try {
+                  const r = await Sync.connect(q('#syUrl').value, q('#syPass').value, q('#syDev').value.trim() || defaultDeviceName());
+                  toast(r.pulled ? 'Connected - your notes are syncing' : 'Connected - this device\'s notes were uploaded');
+                  openSettings();
+                } catch (err) {
+                  btn.disabled = false;
+                  msg.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`;
+                }
+              };
+              q('#btnSyncConnect').onclick = go;
+              q('#syPass').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+            }
+
+            /* OneNote import: sign-in and the heavy lifting happen on the server */
+            async function openImport() {
+              let timer = null; let lastKey = '';
+              const stop = () => clearInterval(timer);
+              const render = (m, st, done) => {
+                const key = st.state + '|' + (st.notebooks || []).length + '|' + (st.userCode || '') + '|' + (st.message || '');
+                if (st.state === 'importing') {
+                  const pct = st.progress.total ? Math.round(st.progress.done / st.progress.total * 100) : 0;
+                  if (lastKey.startsWith('importing|')) {
+                    const bar = m.querySelector('.progress > div'); if (bar) bar.style.width = pct + '%';
+                    const t = m.querySelector('#impText'); if (t) t.textContent = `${st.progress.done} of ${st.progress.total} pages`;
+                    const c = m.querySelector('#impCur'); if (c) c.textContent = st.message || st.progress.current || '';
+                    return;
+                  }
+                } else if (key === lastKey) return;
+                lastKey = key;
+                let body = '';
+                if (st.state === 'unconfigured') {
+                  body = `<p class="sub">OneNote import needs a free Microsoft app ID added to your sync container as <b>MS_CLIENT_ID</b>. The setup steps are in the README on GitHub (about 5 minutes, one time).</p>
+                    <div class="modal-actions"><button class="btn" data-x="readme">Open setup steps</button><button class="btn primary" data-x="close">OK</button></div>`;
+                } else if (st.state === 'idle' || st.state === 'error') {
+                  body = `<p class="sub">Copies your OneNote notebooks from OneDrive into Feynos Notes - sections, pages, subpages, pictures, to-dos and tags. Your OneNote notebooks aren't changed. Importing again later brings over new pages and edits.</p>
+                    ${st.state === 'error' ? `<p class="hint" style="color:var(--danger)">${esc(st.message)}</p>` : st.message ? `<p class="hint">${esc(st.message)}</p>` : ''}
+                    <div class="modal-actions"><button class="btn" data-x="close">Cancel</button><button class="btn primary" data-x="start">${st.hasSavedSignIn ? 'Continue' : 'Sign in to Microsoft'}</button></div>`;
+                } else if (st.state === 'signin') {
+                  body = `<p class="sub">Open the Microsoft sign-in page on any device, enter this code, and sign in with the account that has your OneNote notebooks.</p>
+                    <div class="code-box">${esc(st.userCode)}</div>
+                    <div class="row-inline" style="justify-content:center"><button class="btn" data-x="copy">Copy code</button><button class="btn primary" data-x="open">Open ${esc((st.verificationUri || '').replace(/^https?:\/\//, ''))}</button></div>
+                    <p class="hint" style="text-align:center;margin-top:12px">Waiting for you to sign in…</p>
+                    <div class="modal-actions"><button class="btn" data-x="cancel">Cancel</button></div>`;
+                } else if (st.state === 'listing') {
+                  body = `<p class="sub">${esc(st.message || 'Reading your notebooks…')}</p><div class="progress"><div style="width:35%"></div></div>`;
+                } else if (st.state === 'choose' || st.state === 'done') {
+                  const r = st.result;
+                  body = `${r ? `<p class="sub" style="color:var(--ok)"><b>Import finished:</b> ${r.pages} page${r.pages === 1 ? '' : 's'} in ${r.sections} new section${r.sections === 1 ? '' : 's'}${r.skipped ? `, ${r.skipped} unchanged or edited here (kept)` : ''}${r.failed ? `, <span style="color:var(--danger)">${r.failed} failed</span>` : ''}. It's syncing to this device now.</p>` : `<p class="sub">Signed in${st.account ? ' as <b>' + esc(st.account) + '</b>' : ''}. Pick the notebooks to bring over.</p>`}
+                    <div id="nbPicks">${(st.notebooks || []).map(n => `<label class="nb-pick"><input type="checkbox" value="${esc(n.id)}" ${r ? '' : 'checked'}><span><span class="np-name">${esc(n.name)}</span><br><span class="np-sub">${n.already ? 'Imported before - will add new pages and edits' : 'Last changed ' + esc(new Date(n.modified).toLocaleDateString())}</span></span></label>`).join('') || '<p class="hint">No OneNote notebooks found in this account.</p>'}</div>
+                    <div class="modal-actions"><button class="btn" data-x="signout">Sign out of Microsoft</button><button class="btn" data-x="close">${r ? 'Done' : 'Cancel'}</button><button class="btn primary" data-x="import">${r ? 'Import again' : 'Import'}</button></div>`;
+                } else if (st.state === 'importing') {
+                  const pct = st.progress.total ? Math.round(st.progress.done / st.progress.total * 100) : 0;
+                  body = `<p class="sub">Importing… you can close this - it keeps going on your server and syncs here as pages arrive.</p>
+                    <div class="progress"><div style="width:${pct}%"></div></div>
+                    <div class="hint" id="impText">${st.progress.done} of ${st.progress.total} pages</div>
+                    <div class="hint ellipsis" id="impCur">${esc(st.message || st.progress.current || '')}</div>
+                    <div class="modal-actions"><button class="btn danger" data-x="cancel">Stop import</button><button class="btn primary" data-x="close">Close</button></div>`;
+                }
+                m.innerHTML = `<h2>Import from OneNote</h2>${body}`;
+                m.querySelectorAll('[data-x]').forEach(b => b.onclick = async () => {
+                  const x = b.dataset.x;
+                  try {
+                    if (x === 'close') { stop(); done(null); }
+                    else if (x === 'readme') P.openExternal('https://github.com/Feynos-Lin/feynos-note#onenote-import-setup');
+                    else if (x === 'start') render(m, await Sync.importStart(), done);
+                    else if (x === 'open') P.openExternal(st.verificationUri);
+                    else if (x === 'copy') { try { await navigator.clipboard.writeText(st.userCode); toast('Code copied'); } catch (e) { toast(st.userCode); } }
+                    else if (x === 'cancel') render(m, await Sync.importCancel(), done);
+                    else if (x === 'signout') render(m, await Sync.importSignOut(), done);
+                    else if (x === 'import') {
+                      const ids = [...m.querySelectorAll('#nbPicks input:checked')].map(i => i.value);
+                      if (!ids.length) { toast('Pick at least one notebook'); return; }
+                      lastKey = ''; render(m, await Sync.importChoose(ids), done);
+                    }
+                  } catch (err) { toast(err.message, null, null, 6000); }
+                });
+              };
+              let st;
+              try { st = await Sync.importStatus(); } catch (err) { toast(err.message, null, null, 6000); return; }
+              await openModal('', (m, done) => {
+                el.modal.dataset.kind = 'import';
+                render(m, st, done);
+                let wasImporting = st.state === 'importing';
+                timer = setInterval(async () => {
+                  if (el.modalRoot.hidden || el.modal.dataset.kind !== 'import') { stop(); return; }
+                  try {
+                    const s2 = await Sync.importStatus(); st = s2;
+                    if (s2.state === 'importing') { wasImporting = true; Sync.schedule(0); }
+                    if (s2.state === 'done' && wasImporting) { wasImporting = false; Sync.syncNow(); }
+                    render(m, s2, done);
+                  } catch (e) { /* keep polling */ }
+                }, 2000);
+              });
+              stop();
+              delete el.modal.dataset.kind;
             }
 
             /* ===================================================================
@@ -2290,7 +2816,7 @@ jobs:
               if (state.view === 'pages') { setView('nav'); return; }
               flushSave(); P.exitApp();
             });
-            P.onPause(() => { flushSave(); S.flush(); });
+            P.onPause(() => { flushSave(); S.flush(); if (S.syncOn) Sync.syncNow(); });
             window.addEventListener('beforeunload', () => { flushSave(); });
             window.addEventListener('resize', () => { hideChip(); closeMenu(); });
 
@@ -2315,6 +2841,7 @@ jobs:
               openPage(pageId, false);
               setView(isNarrow() ? (pageId ? 'pages' : 'nav') : 'editor');
               startAutoBackup();
+              setupSync();
               maybeRemind();
             })();
           })();
@@ -2588,7 +3115,12 @@ jobs:
             "webDir": "www",
             "android": {
               "adjustMarginsForEdgeToEdge": "force",
-              "backgroundColor": "#f4f2f7"
+              "backgroundColor": "#f4f2f7",
+              "allowMixedContent": true
+            },
+            "server": {
+              "androidScheme": "https",
+              "cleartext": true
             }
           }
           FEYNOS_EOF
@@ -2622,6 +3154,692 @@ jobs:
           # drop adaptive-icon XML so the launcher uses the PNGs above
           shutil.rmtree(os.path.join(res, "mipmap-anydpi-v26"), ignore_errors=True)
           print("icons written")
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/server/server.mjs)"
+          cat > src/server/server.mjs <<'FEYNOS_EOF'
+          // Feynos Notes sync server - zero dependencies (Node 24 + built-in SQLite)
+          // Designed to sit behind a reverse proxy (Caddy, Nginx, Nginx Proxy Manager, Traefik...)
+          import http from 'node:http';
+          import crypto from 'node:crypto';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import zlib from 'node:zlib';
+          import { DatabaseSync } from 'node:sqlite';
+          import { createOneNoteImporter } from './onenote.mjs';
+
+          const VERSION = '__APP_VERSION__';
+          const env = process.env;
+          const PORT = parseInt(env.PORT || '8787', 10);
+          const DATA_DIR = env.DATA_DIR || '/data';
+          const BASE_PATH = ('/' + (env.BASE_PATH || '').replace(/^\/+|\/+$/g, '')).replace(/^\/$/, '');
+          const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
+          const MAX_BODY = Math.max(1, parseFloat(env.MAX_BODY_MB || '200')) * 1024 * 1024;
+          const CORS_ORIGINS = (env.CORS_ORIGINS || '*').split(',').map(s => s.trim()).filter(Boolean);
+          const PULL_LIMIT_BYTES = 16 * 1024 * 1024;
+
+          function readPassword() {
+            if (env.FEYNOS_PASSWORD_FILE) {
+              try { return fs.readFileSync(env.FEYNOS_PASSWORD_FILE, 'utf8').trim(); } catch (e) { console.error('Cannot read FEYNOS_PASSWORD_FILE:', e.message); }
+            }
+            return env.FEYNOS_PASSWORD || '';
+          }
+          const PASSWORD = readPassword();
+          if (!PASSWORD || PASSWORD.length < 8) {
+            console.error('FEYNOS_PASSWORD must be set (8+ characters). Refusing to start.');
+            process.exit(1);
+          }
+          const PASSWORD_HASH = crypto.createHash('sha256').update(PASSWORD).digest();
+
+          /* ---------------- database ---------------- */
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          const db = new DatabaseSync(path.join(DATA_DIR, 'feynos-notes.db'));
+          db.exec(`
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS records (
+              id TEXT PRIMARY KEY, type TEXT NOT NULL, rev INTEGER NOT NULL, updated INTEGER NOT NULL,
+              deleted INTEGER NOT NULL DEFAULT 0, data TEXT, device TEXT
+            );
+            CREATE INDEX IF NOT EXISTS records_rev ON records(rev);
+            CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, device TEXT, created INTEGER, last_seen INTEGER);
+            CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+          `);
+          const kvGet = db.prepare('SELECT v FROM kv WHERE k = ?');
+          const kvSet = db.prepare('INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v');
+          if (!kvGet.get('server_id')) kvSet.run('server_id', crypto.randomUUID());
+          const SERVER_ID = kvGet.get('server_id').v;
+          const getSeq = () => parseInt((kvGet.get('seq') || { v: '0' }).v, 10);
+
+          const q = {
+            get: db.prepare('SELECT * FROM records WHERE id = ?'),
+            upsert: db.prepare(`INSERT INTO records(id, type, rev, updated, deleted, data, device) VALUES(?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET type = excluded.type, rev = excluded.rev, updated = excluded.updated,
+              deleted = excluded.deleted, data = excluded.data, device = excluded.device`),
+            since: db.prepare('SELECT * FROM records WHERE rev > ? ORDER BY rev LIMIT 2000'),
+            count: db.prepare('SELECT COUNT(*) AS n FROM records WHERE deleted = 0'),
+            session: db.prepare('SELECT * FROM sessions WHERE token_hash = ?'),
+            touchSession: db.prepare('UPDATE sessions SET last_seen = ? WHERE token_hash = ?'),
+            addSession: db.prepare('INSERT INTO sessions(token_hash, device, created, last_seen) VALUES(?, ?, ?, ?)'),
+            delSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
+            listSessions: db.prepare('SELECT device, created, last_seen FROM sessions ORDER BY last_seen DESC')
+          };
+          const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+
+          /* ---------------- helpers ---------------- */
+          function clientIp(req) {
+            if (TRUST_PROXY) {
+              const xff = req.headers['x-forwarded-for'];
+              if (xff) return String(xff).split(',')[0].trim();
+              if (req.headers['x-real-ip']) return String(req.headers['x-real-ip']).trim();
+            }
+            return req.socket.remoteAddress || '?';
+          }
+          function corsHeaders(req) {
+            const origin = req.headers.origin;
+            const allow = CORS_ORIGINS.includes('*') ? '*' : (origin && CORS_ORIGINS.includes(origin) ? origin : CORS_ORIGINS[0]);
+            return {
+              'Access-Control-Allow-Origin': allow,
+              'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+              'Access-Control-Allow-Headers': 'Authorization, Content-Type, Content-Encoding, X-Feynos-Device',
+              'Access-Control-Max-Age': '86400',
+              Vary: 'Origin'
+            };
+          }
+          function send(req, res, status, obj) {
+            let body = Buffer.from(JSON.stringify(obj));
+            const headers = { ...corsHeaders(req), 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+            if (body.length > 1024 && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+              body = zlib.gzipSync(body, { level: 5 }); headers['Content-Encoding'] = 'gzip';
+            }
+            headers['Content-Length'] = body.length;
+            res.writeHead(status, headers); res.end(body);
+          }
+          const fail = (req, res, status, message) => send(req, res, status, { ok: false, error: message });
+
+          function readBody(req) {
+            return new Promise((resolve, reject) => {
+              let size = 0; const chunks = [];
+              let stream = req;
+              const enc = String(req.headers['content-encoding'] || '').toLowerCase();
+              if (enc === 'gzip') stream = req.pipe(zlib.createGunzip());
+              stream.on('data', c => {
+                size += c.length;
+                if (size > MAX_BODY) { reject(Object.assign(new Error(`Upload too large (limit ${env.MAX_BODY_MB || 200} MB)`), { status: 413 })); req.destroy(); return; }
+                chunks.push(c);
+              });
+              stream.on('end', () => {
+                try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); }
+                catch { reject(Object.assign(new Error('Invalid JSON'), { status: 400 })); }
+              });
+              stream.on('error', e => reject(Object.assign(e, { status: 400 })));
+            });
+          }
+
+          /* ---------------- login rate limiting ---------------- */
+          const attempts = new Map(); // ip -> {n, until}
+          function limited(ip) {
+            const a = attempts.get(ip);
+            return a && a.n >= 10 && a.until > Date.now();
+          }
+          function noteFailure(ip) {
+            const a = attempts.get(ip) || { n: 0, until: 0 };
+            if (a.until < Date.now()) { a.n = 0; }
+            a.n++; a.until = Date.now() + 15 * 60 * 1000;
+            attempts.set(ip, a);
+          }
+          setInterval(() => { const t = Date.now(); for (const [k, v] of attempts) if (v.until < t) attempts.delete(k); }, 600000).unref();
+
+          function auth(req) {
+            const h = String(req.headers.authorization || '');
+            const m = h.match(/^Bearer\s+(\S+)$/i); if (!m) return null;
+            const th = sha(m[1]);
+            const s = q.session.get(th); if (!s) return null;
+            if (Date.now() - (s.last_seen || 0) > 60000) q.touchSession.run(Date.now(), th);
+            return { ...s, token_hash: th };
+          }
+
+          /* ---------------- sync core ---------------- */
+          const TYPES = new Set(['notebook', 'section', 'page']);
+          function rowOut(r) {
+            return { type: r.type, id: r.id, rev: r.rev, updated: r.updated, deleted: !!r.deleted, data: r.data ? JSON.parse(r.data) : null };
+          }
+          const newId = () => Date.now().toString(36) + crypto.randomBytes(5).toString('hex').slice(0, 7);
+
+          function applyChanges(changes, device) {
+            const results = [];
+            let seq = getSeq();
+            db.exec('BEGIN IMMEDIATE');
+            try {
+              for (const c of changes) {
+                if (!c || typeof c.id !== 'string' || !TYPES.has(c.type) || c.id.length > 64) { results.push({ id: c && c.id, status: 'invalid' }); continue; }
+                const updated = Number(c.updated) || Date.now();
+                const deleted = c.deleted ? 1 : 0;
+                const data = deleted ? null : JSON.stringify(c.data || {});
+                const cur = q.get.get(c.id);
+                const base = Number(c.base) || 0;
+
+                if (!cur || cur.rev === base) {
+                  q.upsert.run(c.id, c.type, ++seq, updated, deleted, data, device);
+                  results.push({ id: c.id, status: 'ok' });
+                  continue;
+                }
+                // Someone else changed this record since the device last saw it.
+                if (c.type === 'page' && !cur.deleted && !deleted) {
+                  const mine = c.data || {}; const theirs = JSON.parse(cur.data || '{}');
+                  if ((mine.html || '') === (theirs.html || '') && (mine.title || '') === (theirs.title || '')) {
+                    // same content - just take the newer metadata (order, section, level)
+                    if (updated > cur.updated) q.upsert.run(c.id, c.type, ++seq, updated, 0, data, device);
+                    results.push({ id: c.id, status: 'ok' });
+                    continue;
+                  }
+                  // keep both: the server copy stays, this device's version becomes a conflict copy
+                  const copyId = newId();
+                  const copy = { ...mine, id: copyId, title: (mine.title || 'Untitled page') + ` (conflict copy – ${device || 'another device'})`, order: (mine.order || 0) + 0.5, created: Date.now() };
+                  q.upsert.run(copyId, 'page', ++seq, Date.now(), 0, JSON.stringify(copy), device);
+                  results.push({ id: c.id, status: 'conflict', copyId });
+                  continue;
+                }
+                if (c.type === 'page' && deleted && !cur.deleted) {
+                  // never lose edits made elsewhere to a delete from a stale device
+                  results.push({ id: c.id, status: 'kept' });
+                  continue;
+                }
+                // notebooks/sections (names, colors, order) and resurrections: newest edit wins
+                if (updated >= cur.updated || (cur.deleted && !deleted)) {
+                  q.upsert.run(c.id, c.type, ++seq, updated, deleted, data, device);
+                  results.push({ id: c.id, status: 'ok' });
+                } else results.push({ id: c.id, status: 'stale' });
+              }
+              kvSet.run('seq', String(seq));
+              db.exec('COMMIT');
+            } catch (e) { db.exec('ROLLBACK'); throw e; }
+            return results;
+          }
+
+          function pullSince(since) {
+            const rows = q.since.all(since);
+            const out = []; let bytes = 0; let last = since;
+            for (const r of rows) {
+              out.push(rowOut(r)); last = r.rev; bytes += (r.data ? r.data.length : 0);
+              if (bytes > PULL_LIMIT_BYTES) break;
+            }
+            const seq = getSeq();
+            return { changes: out, seq: last, more: last < seq && out.length > 0 };
+          }
+
+          /* ---------------- OneNote import ---------------- */
+          const allOfType = db.prepare('SELECT data FROM records WHERE type = ? AND deleted = 0');
+          const importStore = {
+            get(id) { const r = q.get.get(id); return r ? { ...(r.data ? JSON.parse(r.data) : {}), deleted: !!r.deleted, updated: r.updated } : null; },
+            maxOrder(type) { let m = -1; for (const r of allOfType.all(type)) { const o = JSON.parse(r.data).order; if (typeof o === 'number' && o > m) m = o; } return m; },
+            write(type, id, data, updated) {
+              db.exec('BEGIN IMMEDIATE');
+              try {
+                const seq = getSeq() + 1;
+                q.upsert.run(id, type, seq, updated || data.updated || Date.now(), 0, JSON.stringify(data), 'OneNote import');
+                kvSet.run('seq', String(seq));
+                db.exec('COMMIT');
+              } catch (e) { db.exec('ROLLBACK'); throw e; }
+            }
+          };
+          const onenote = createOneNoteImporter({
+            clientId: (env.MS_CLIENT_ID || '').trim(),
+            tenant: (env.MS_TENANT || 'common').trim(),
+            kvGet: k => { const r = kvGet.get(k); return r && r.v ? r.v : ''; },
+            kvSet: (k, v) => kvSet.run(k, v),
+            store: importStore,
+            log: (...a) => console.log(...a)
+          });
+
+          /* ---------------- http ---------------- */
+          const STATUS_PAGE = () => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feynos Notes Sync</title>
+          <style>body{font-family:system-ui,sans-serif;max-width:560px;margin:60px auto;padding:0 18px;color:#221d29;background:#f4f2f7}h1{color:#5b2a86;font-size:22px}code{background:#e9e2f2;padding:2px 6px;border-radius:5px}p{line-height:1.55}</style></head>
+          <body><h1>✓ Feynos Notes sync server is running</h1>
+          <p>Version <code>${VERSION}</code>. In the app open <b>Settings → Sync</b> and enter this page's address as the server address.</p>
+          <p>Behind a reverse proxy? This page loading through your domain means the proxy is set up correctly.</p></body></html>`;
+
+          const server = http.createServer(async (req, res) => {
+            const started = Date.now();
+            let url;
+            try { url = new URL(req.url, 'http://local'); } catch { res.writeHead(400); res.end(); return; }
+            let p = url.pathname;
+            // Works whether or not the proxy strips the sub-path
+            if (BASE_PATH && (p === BASE_PATH || p.startsWith(BASE_PATH + '/'))) p = p.slice(BASE_PATH.length) || '/';
+            p = p.replace(/\/+$/, '') || '/';
+
+            res.on('finish', () => {
+              if (p !== '/api/health') console.log(`${new Date().toISOString()} ${clientIp(req)} ${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`);
+            });
+
+            if (req.method === 'OPTIONS') { res.writeHead(204, corsHeaders(req)); res.end(); return; }
+
+            try {
+              if (req.method === 'GET' && p === '/') {
+                const body = STATUS_PAGE();
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(body); return;
+              }
+              if (req.method === 'GET' && p === '/api/health') {
+                return send(req, res, 200, { ok: true, app: 'feynos-notes-sync', version: VERSION, serverId: SERVER_ID });
+              }
+              if (req.method === 'POST' && p === '/api/login') {
+                const ip = clientIp(req);
+                if (limited(ip)) return fail(req, res, 429, 'Too many wrong passwords. Try again in 15 minutes.');
+                const b = await readBody(req);
+                const given = crypto.createHash('sha256').update(String(b.password || '')).digest();
+                if (!crypto.timingSafeEqual(given, PASSWORD_HASH)) { noteFailure(ip); return fail(req, res, 401, 'Wrong password'); }
+                attempts.delete(ip);
+                const token = crypto.randomBytes(32).toString('base64url');
+                const device = String(b.device || 'device').slice(0, 60);
+                q.addSession.run(sha(token), device, Date.now(), Date.now());
+                console.log(`login ok: ${device} from ${ip}`);
+                return send(req, res, 200, { ok: true, token, serverId: SERVER_ID, seq: getSeq(), count: q.count.get().n });
+              }
+
+              // everything below needs a token
+              const s = auth(req);
+              if (!s) return fail(req, res, 401, 'Signed out - please sign in again');
+
+              if (req.method === 'GET' && p === '/api/status') {
+                return send(req, res, 200, { ok: true, serverId: SERVER_ID, seq: getSeq(), count: q.count.get().n, devices: q.listSessions.all() });
+              }
+              if (req.method === 'POST' && p === '/api/logout') {
+                q.delSession.run(s.token_hash);
+                return send(req, res, 200, { ok: true });
+              }
+              if (req.method === 'POST' && p === '/api/sync') {
+                const b = await readBody(req);
+                const since = Math.max(0, parseInt(b.since, 10) || 0);
+                const changes = Array.isArray(b.changes) ? b.changes : [];
+                const results = changes.length ? applyChanges(changes, s.device) : [];
+                const pulled = b.pull === false ? { changes: [], seq: since, more: getSeq() > since } : pullSince(since);
+                return send(req, res, 200, { ok: true, serverId: SERVER_ID, results, ...pulled });
+              }
+              if (p.startsWith('/api/import/onenote/')) {
+                const action = p.slice('/api/import/onenote/'.length);
+                if (req.method === 'GET' && action === 'status') return send(req, res, 200, onenote.status());
+                if (req.method === 'POST') {
+                  const b = await readBody(req);
+                  if (action === 'start') return send(req, res, 200, await onenote.start());
+                  if (action === 'choose') return send(req, res, 200, onenote.choose(b.ids));
+                  if (action === 'cancel') return send(req, res, 200, onenote.cancel());
+                  if (action === 'signout') return send(req, res, 200, onenote.signOut());
+                }
+              }
+              return fail(req, res, 404, 'Not found');
+            } catch (e) {
+              console.error(e);
+              return fail(req, res, e.status || 500, e.status ? e.message : 'Server error');
+            }
+          });
+          server.requestTimeout = 10 * 60 * 1000;
+          server.headersTimeout = 65 * 1000;
+          server.keepAliveTimeout = 61 * 1000;
+
+          server.listen(PORT, '0.0.0.0', () => {
+            console.log(`Feynos Notes sync ${VERSION} listening on :${PORT}${BASE_PATH ? ' (base path ' + BASE_PATH + ')' : ''}${TRUST_PROXY ? ', trusting proxy headers' : ''}${env.MS_CLIENT_ID ? ', OneNote import enabled' : ''}`);
+          });
+          const shutdown = () => { server.close(); try { db.close(); } catch { /* noop */ } process.exit(0); };
+          process.on('SIGTERM', shutdown);
+          process.on('SIGINT', shutdown);
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/server/onenote.mjs)"
+          cat > src/server/onenote.mjs <<'FEYNOS_EOF'
+          // Feynos Notes - import OneNote notebooks from OneDrive via Microsoft Graph (delegated, device-code sign-in)
+          import crypto from 'node:crypto';
+
+          const GRAPH = 'https://graph.microsoft.com/v1.0';
+          const SCOPE = 'Notes.Read User.Read offline_access';
+          const COLORS = ['#7b3fb0', '#2f6fdb', '#1f9e89', '#4d9a2a', '#d9a400', '#e0712b', '#d2344a', '#c2408f', '#6b6f7a', '#0b8bb3'];
+          const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const rid = (kind, oneId) => 'on' + kind[0] + crypto.createHash('sha1').update(oneId).digest('hex').slice(0, 20);
+          const escHtml = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+          /* ===================================================================
+             OneNote page HTML -> Feynos Notes HTML
+             =================================================================== */
+          const DROP_STYLE = /^(position|left|top|right|bottom|z-index|font-family|line-height|margin(-\w+)?)$/i;
+          function cleanStyle(tag, style) {
+            const keepSize = /^(img|table|td|th|col)$/i.test(tag);
+            const out = [];
+            for (const decl of style.split(';')) {
+              const i = decl.indexOf(':'); if (i < 0) continue;
+              const prop = decl.slice(0, i).trim(); const val = decl.slice(i + 1).trim();
+              if (!prop || DROP_STYLE.test(prop)) continue;
+              if (!keepSize && /^(width|height|min-width|max-width)$/i.test(prop)) continue;
+              if (/^font-size$/i.test(prop) && /^(10|10\.5|11|12)pt$/i.test(val)) continue; // OneNote's default body size
+              out.push(prop + ':' + val);
+            }
+            return out.join(';');
+          }
+
+          const TAG_CHIPS = {
+            important: '<span class="tag tag-important" contenteditable="false">★ Important</span> ',
+            question: '<span class="tag tag-question" contenteditable="false">? Question</span> ',
+            idea: '<span class="tag tag-idea" contenteditable="false">💡 Idea</span> '
+          };
+          function chipsFor(tags) {
+            let h = '';
+            for (const t of tags) {
+              const base = t.split(':')[0];
+              if (base === 'to-do') continue;
+              if (TAG_CHIPS[base]) h += TAG_CHIPS[base];
+              else h += `<span class="tag tag-question" contenteditable="false">${escHtml(base.replace(/-/g, ' '))}</span> `;
+            }
+            return h;
+          }
+
+          export async function convertPageHtml(html, fetchImage) {
+            const m = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+            let h = m ? m[1] : html;
+
+            h = h.replace(/<!--[\s\S]*?-->/g, '');
+
+            // attachments and embeds
+            h = h.replace(/<object\b([^>]*)>(?:[\s\S]*?<\/object>)?/gi, (all, attrs) => {
+              const name = (attrs.match(/data-attachment="([^"]*)"/i) || [])[1] || 'file';
+              return `<p>📎 ${name} <i>(attachment not imported)</i></p>`;
+            });
+            h = h.replace(/<iframe\b([^>]*)>(?:[\s\S]*?<\/iframe>)?/gi, (all, attrs) => {
+              const src = (attrs.match(/data-original-src="([^"]*)"/i) || attrs.match(/\ssrc="([^"]*)"/i) || [])[1];
+              return src ? `<p>🎬 <a href="${src}">${src}</a></p>` : '';
+            });
+
+            // to-do checkboxes and tags on paragraphs and headings
+            h = h.replace(/<(p|h[1-6])\b([^>]*?)\sdata-tag="([^"]*)"([^>]*)>([\s\S]*?)<\/\1>/gi, (all, tag, a1, tagList, a2, inner) => {
+              const tags = tagList.split(',').map(s => s.trim()).filter(Boolean);
+              const todo = tags.find(t => t.startsWith('to-do'));
+              const chips = chipsFor(tags);
+              if (todo) return `<ul class="todo"><li data-done="${todo.includes(':completed')}">${chips}${inner}</li></ul>`;
+              return `<${tag}${a1}${a2}>${chips}${inner}</${tag}>`;
+            });
+            // list items keep their list - show the state as a symbol
+            h = h.replace(/<li\b([^>]*?)\sdata-tag="([^"]*)"([^>]*)>/gi, (all, a1, tagList, a2) => {
+              const tags = tagList.split(',').map(s => s.trim());
+              const todo = tags.find(t => t.startsWith('to-do'));
+              return `<li${a1}${a2}>${todo ? (todo.includes(':completed') ? '☑ ' : '☐ ') : ''}${chipsFor(tags)}`;
+            });
+            h = h.replace(/<\/ul>\s*<ul class="todo">/g, '');
+
+            // tidy every tag's attributes: OneNote's canvas positions don't apply to a flowing page
+            h = h.replace(/<([a-z][a-z0-9]*)\b([^>]*)>/gi, (all, tag, attrs) => {
+              if (!attrs.trim()) return all;
+              let a = attrs.replace(/\s(data-id|data-absolute-enabled|data-render-original-src|data-src-type|data-fullres-src-type|data-index|lang)="[^"]*"/gi, '');
+              a = a.replace(/\sstyle="([^"]*)"/i, (s, st) => { const c = cleanStyle(tag, st); return c ? ` style="${c}"` : ''; });
+              return `<${tag}${a}>`;
+            });
+
+            // images: pull each one down and embed it so the page works offline everywhere
+            const imgs = [...h.matchAll(/<img\b[^>]*>/gi)];
+            const out = [];
+            let last = 0;
+            for (const im of imgs) {
+              out.push(h.slice(last, im.index));
+              last = im.index + im[0].length;
+              const tagStr = im[0];
+              const src = (tagStr.match(/data-fullres-src="([^"]*)"/i) || tagStr.match(/\ssrc="([^"]*)"/i) || [])[1];
+              const alt = (tagStr.match(/\salt="([^"]*)"/i) || [])[1] || '';
+              const width = (tagStr.match(/\swidth="(\d+)"/i) || [])[1];
+              let dataUrl = null;
+              if (src && /^https:\/\/graph\.microsoft\.com\//i.test(src.replace(/&amp;/g, '&'))) {
+                try { dataUrl = await fetchImage(src.replace(/&amp;/g, '&')); } catch (e) { dataUrl = null; }
+              } else if (src && src.startsWith('data:image/')) dataUrl = src;
+              out.push(dataUrl
+                ? `<img src="${dataUrl}" alt="${alt}"${width ? ` style="width:${width}px"` : ''}>`
+                : `<p><i>[picture couldn't be imported${alt ? ': ' + alt : ''}]</i></p>`);
+            }
+            out.push(h.slice(last));
+            h = out.join('');
+
+            // unwrap OneNote's outline containers
+            h = h.replace(/<div>\s*<\/div>/gi, '').trim();
+            return h;
+          }
+
+          /* ===================================================================
+             Importer state machine (one import at a time)
+             =================================================================== */
+          export function createOneNoteImporter({ clientId, tenant, kvGet, kvSet, store, log }) {
+            const st = {
+              state: clientId ? 'idle' : 'unconfigured',
+              message: '', userCode: '', verificationUri: '', expiresAt: 0,
+              account: '', notebooks: [], progress: { done: 0, total: 0, current: '' }, result: null
+            };
+            let access = { token: '', expiresAt: 0 };
+            let cancelFlag = false;
+            let pollTimer = null;
+            const authority = `https://login.microsoftonline.com/${tenant || 'common'}/oauth2/v2.0`;
+
+            const publicState = () => ({ ok: true, ...st, configured: !!clientId, hasSavedSignIn: !!kvGet('ms_refresh') });
+
+            async function tokenRequest(params) {
+              const r = await fetch(authority + '/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, ...params }) });
+              return r.json();
+            }
+            function saveTokens(t) {
+              access = { token: t.access_token, expiresAt: Date.now() + (t.expires_in - 120) * 1000 };
+              if (t.refresh_token) kvSet('ms_refresh', t.refresh_token);
+            }
+            async function ensureToken() {
+              if (access.token && Date.now() < access.expiresAt) return access.token;
+              const rt = kvGet('ms_refresh');
+              if (!rt) throw new Error('Microsoft sign-in expired - start the import again.');
+              const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: rt, scope: SCOPE });
+              if (!t.access_token) { kvSet('ms_refresh', ''); throw new Error('Microsoft sign-in expired - start the import again.'); }
+              saveTokens(t);
+              return access.token;
+            }
+
+            async function graph(url, asBuffer) {
+              for (let attempt = 0; attempt < 6; attempt++) {
+                if (cancelFlag) throw new Error('cancelled');
+                const token = await ensureToken();
+                const r = await fetch(url.startsWith('http') ? url : GRAPH + url, { headers: { Authorization: 'Bearer ' + token } });
+                if (r.status === 429 || r.status === 503 || r.status === 504) {
+                  const wait = Math.min(120, parseInt(r.headers.get('retry-after') || '0', 10) || 5 * (attempt + 1));
+                  st.message = `Microsoft asked us to slow down - waiting ${wait}s…`;
+                  await sleep(wait * 1000); st.message = '';
+                  continue;
+                }
+                if (r.status === 401 && attempt === 0) { access.token = ''; continue; }
+                if (!r.ok) {
+                  let detail = ''; try { const j = await r.json(); detail = (j.error && (j.error.message || j.error.code)) || ''; } catch { /* noop */ }
+                  throw new Error(`Microsoft Graph error ${r.status}${detail ? ': ' + detail : ''}`);
+                }
+                if (asBuffer) return { buf: Buffer.from(await r.arrayBuffer()), type: r.headers.get('content-type') || 'image/png' };
+                const ct = r.headers.get('content-type') || '';
+                return ct.includes('json') ? r.json() : r.text();
+              }
+              throw new Error('Microsoft Graph kept throttling - try again later.');
+            }
+            async function graphAll(url) {
+              const items = [];
+              let next = url;
+              while (next) { const j = await graph(next); items.push(...(j.value || [])); next = j['@odata.nextLink'] || null; }
+              return items;
+            }
+
+            async function loadNotebooks() {
+              st.state = 'listing'; st.message = 'Reading your notebooks…';
+              try {
+                const me = await graph('/me?$select=displayName,userPrincipalName,mail');
+                st.account = me.mail || me.userPrincipalName || me.displayName || '';
+              } catch { st.account = ''; }
+              const nbs = await graphAll('/me/onenote/notebooks?$select=id,displayName,lastModifiedDateTime&$orderby=displayName');
+              st.notebooks = nbs.map(n => ({ id: n.id, name: n.displayName, modified: n.lastModifiedDateTime, already: !!store.get(rid('notebook', n.id)) }));
+              st.state = 'choose'; st.message = '';
+            }
+
+            async function start() {
+              if (!clientId) { st.state = 'unconfigured'; return publicState(); }
+              if (['signin', 'listing', 'importing'].includes(st.state)) return publicState();
+              cancelFlag = false; st.result = null; st.message = '';
+              if (kvGet('ms_refresh')) {
+                try { await ensureToken(); loadNotebooks().catch(fail); return publicState(); } catch { /* fall through to a new sign-in */ }
+              }
+              const r = await fetch(authority + '/devicecode', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, scope: SCOPE }) });
+              const j = await r.json();
+              if (!j.device_code) { st.state = 'error'; st.message = j.error_description || j.error || 'Microsoft sign-in failed to start.'; return publicState(); }
+              Object.assign(st, { state: 'signin', userCode: j.user_code, verificationUri: j.verification_uri, expiresAt: Date.now() + j.expires_in * 1000 });
+              let interval = (j.interval || 5) * 1000;
+              const poll = async () => {
+                if (cancelFlag || st.state !== 'signin') return;
+                if (Date.now() > st.expiresAt) { st.state = 'error'; st.message = 'The sign-in code expired. Start again.'; return; }
+                const t = await tokenRequest({ grant_type: 'urn:ietf:params:oauth:grant-type:device_code', device_code: j.device_code }).catch(() => ({ error: 'network' }));
+                if (t.access_token) { saveTokens(t); st.userCode = ''; loadNotebooks().catch(fail); return; }
+                if (t.error === 'slow_down') interval += 5000;
+                else if (t.error && !['authorization_pending', 'network'].includes(t.error)) { st.state = 'error'; st.message = t.error_description || t.error; return; }
+                pollTimer = setTimeout(poll, interval);
+              };
+              pollTimer = setTimeout(poll, interval);
+              return publicState();
+            }
+
+            function fail(e) {
+              if (e && e.message === 'cancelled') { st.state = 'idle'; st.message = 'Import cancelled.'; return; }
+              log('OneNote import failed:', e);
+              st.state = 'error'; st.message = String(e && e.message || e);
+            }
+
+            async function sectionsOf(parentPath, prefix, out) {
+              const secs = await graphAll(`${parentPath}/sections?$select=id,displayName`);
+              for (const s of secs) out.push({ id: s.id, name: prefix + s.displayName });
+              const groups = await graphAll(`${parentPath}/sectionGroups?$select=id,displayName`);
+              for (const g of groups) await sectionsOf(`/me/onenote/sectionGroups/${g.id}`, prefix + g.displayName + ' › ', out);
+            }
+
+            async function runImport(ids) {
+              const chosen = st.notebooks.filter(n => ids.includes(n.id));
+              st.state = 'importing'; st.progress = { done: 0, total: 0, current: 'Listing sections and pages…' };
+              const stats = { notebooks: 0, sections: 0, pages: 0, skipped: 0, failed: 0 };
+              let nbOrder = store.maxOrder('notebook') + 1;
+
+              // 1) list everything first so progress is meaningful
+              const plan = [];
+              for (const nb of chosen) {
+                const secs = [];
+                await sectionsOf(`/me/onenote/notebooks/${nb.id}`, '', secs);
+                const secPlans = [];
+                for (const s of secs) {
+                  const pages = await graphAll(`/me/onenote/sections/${s.id}/pages?pagelevel=true&$top=100&$select=id,title,createdDateTime,lastModifiedDateTime,level,order`);
+                  secPlans.push({ ...s, pages });
+                  st.progress.total += pages.length;
+                }
+                plan.push({ nb, sections: secPlans });
+              }
+
+              // 2) write notebooks, sections and pages
+              for (const { nb, sections } of plan) {
+                const nbId = rid('notebook', nb.id);
+                if (!store.get(nbId)) {
+                  store.write('notebook', nbId, { id: nbId, name: nb.name, color: COLORS[(nbOrder) % COLORS.length], order: nbOrder++, updated: Date.now() });
+                  stats.notebooks++;
+                }
+                let secOrder = 0;
+                for (const s of sections) {
+                  const secId = rid('section', s.id);
+                  if (!store.get(secId)) {
+                    store.write('section', secId, { id: secId, notebookId: nbId, name: s.name, color: COLORS[(secOrder + 1) % COLORS.length], order: secOrder, updated: Date.now() });
+                    stats.sections++;
+                  }
+                  secOrder++;
+                  const pages = s.pages.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || String(a.createdDateTime).localeCompare(String(b.createdDateTime)));
+                  let pOrder = 0;
+                  for (const pg of pages) {
+                    if (cancelFlag) throw new Error('cancelled');
+                    st.progress.current = `${nb.name} › ${s.name} › ${pg.title || 'Untitled page'}`;
+                    const pid = rid('page', pg.id);
+                    const modified = Date.parse(pg.lastModifiedDateTime) || Date.now();
+                    const existing = store.get(pid);
+                    const order = pOrder++;
+                    if (existing && (existing.deleted || existing.updated > modified)) { stats.skipped++; st.progress.done++; continue; }
+                    try {
+                      const raw = await graph(`/me/onenote/pages/${pg.id}/content`);
+                      const html = await convertPageHtml(String(raw), async url => {
+                        const { buf, type } = await graph(url, true);
+                        if (buf.length > MAX_IMAGE_BYTES) return null;
+                        return `data:${type.split(';')[0]};base64,${buf.toString('base64')}`;
+                      });
+                      store.write('page', pid, {
+                        id: pid, sectionId: secId, title: pg.title || '', html, level: Math.min(2, pg.level || 0),
+                        order, created: Date.parse(pg.createdDateTime) || modified, updated: modified, deleted: null
+                      }, modified);
+                      stats.pages++;
+                    } catch (e) {
+                      if (e.message === 'cancelled') throw e;
+                      log(`page failed (${pg.title}):`, e.message);
+                      stats.failed++;
+                    }
+                    st.progress.done++;
+                  }
+                }
+              }
+              st.result = stats;
+              st.state = 'done';
+              st.progress.current = '';
+              st.message = '';
+              st.notebooks.forEach(n => { if (ids.includes(n.id)) n.already = true; });
+            }
+
+            return {
+              status: publicState,
+              start,
+              choose(ids) {
+                if (st.state !== 'choose' && st.state !== 'done') throw Object.assign(new Error('Sign in to Microsoft first'), { status: 409 });
+                ids = (Array.isArray(ids) ? ids : []).filter(id => st.notebooks.some(n => n.id === id));
+                if (!ids.length) throw Object.assign(new Error('Pick at least one notebook'), { status: 400 });
+                cancelFlag = false;
+                runImport(ids).catch(fail);
+                return publicState();
+              },
+              cancel() { cancelFlag = true; clearTimeout(pollTimer); if (st.state === 'signin' || st.state === 'choose' || st.state === 'error' || st.state === 'done') { st.state = 'idle'; st.message = ''; } return publicState(); },
+              signOut() { cancelFlag = true; clearTimeout(pollTimer); kvSet('ms_refresh', ''); access = { token: '', expiresAt: 0 }; Object.assign(st, { state: clientId ? 'idle' : 'unconfigured', account: '', notebooks: [], userCode: '', message: '' }); return publicState(); }
+            };
+          }
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/server/Dockerfile)"
+          cat > src/server/Dockerfile <<'FEYNOS_EOF'
+          FROM node:24-alpine
+          LABEL org.opencontainers.image.source="https://github.com/Feynos-Lin/feynos-note" \
+                org.opencontainers.image.title="Feynos Notes sync server" \
+                org.opencontainers.image.description="Self-hosted sync for Feynos Notes, with OneNote import"
+          WORKDIR /app
+          COPY server.mjs onenote.mjs ./
+          ENV NODE_ENV=production PORT=8787 DATA_DIR=/data NODE_NO_WARNINGS=1
+          RUN mkdir -p /data && chown node:node /data
+          USER node
+          VOLUME /data
+          EXPOSE 8787
+          HEALTHCHECK --interval=30s --timeout=5s --start-period=10s CMD wget -qO- http://127.0.0.1:8787/api/health > /dev/null || exit 1
+          CMD ["node", "server.mjs"]
+          FEYNOS_EOF
+
+          mkdir -p "$(dirname src/server/docker-compose.yml)"
+          cat > src/server/docker-compose.yml <<'FEYNOS_EOF'
+          # Feynos Notes sync server
+          # 1. Put this file in a folder on your server (e.g. C:\docker\feynos-notes)
+          # 2. Change FEYNOS_PASSWORD below
+          # 3. Run:  docker compose up -d
+          # 4. In the app: Settings -> Sync -> enter your address and password
+          services:
+            feynos-notes-sync:
+              image: ghcr.io/feynos-lin/feynos-note-sync:latest
+              container_name: feynos-notes-sync
+              restart: unless-stopped
+              ports:
+                - "8787:8787"            # remove this if your reverse proxy shares a Docker network with it
+              environment:
+                FEYNOS_PASSWORD: "change-me-to-something-long"
+                TRUST_PROXY: "true"      # use X-Forwarded-For from your reverse proxy for logs and login rate limiting
+                # BASE_PATH: "/notes"    # only if you serve it under a sub-path, like https://example.com/notes
+                MAX_BODY_MB: "200"       # biggest single upload (pages with lots of pictures)
+                # MS_CLIENT_ID: ""       # enables "Import from OneNote" - see the README
+                # MS_TENANT: "common"
+              volumes:
+                - ./feynos-notes-data:/data
           FEYNOS_EOF
 
           base64 -d > src/www/icon.png <<'FEYNOS_EOF'
@@ -2735,7 +3953,7 @@ jobs:
       - name: Stamp version
         shell: bash
         run: |
-          sed -i "s/__APP_VERSION__/$APP_VERSION/" src/www/app.js
+          sed -i "s/__APP_VERSION__/$APP_VERSION/" src/www/app.js src/server/server.mjs
           find src -type f | sort
 
       - uses: actions/upload-artifact@v4
@@ -2902,15 +4120,56 @@ jobs:
           name: windows
           path: app/dist/*.exe
 
+  server:
+    name: Sync server image
+    needs: source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source
+          path: src
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: src/server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/feynos-lin/feynos-note-sync:latest
+            ghcr.io/feynos-lin/feynos-note-sync:${{ env.APP_VERSION }}
+
+      - name: Quick test of the image
+        shell: bash
+        run: |
+          docker run -d --name t -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 ghcr.io/feynos-lin/feynos-note-sync:latest
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8787/notes/api/health && break; sleep 1; done
+          curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' http://127.0.0.1:8787/notes/api/login | grep -q token
+          docker logs t
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server
+          path: src/server/docker-compose.yml
+
   release:
     name: Publish release
-    needs: [android, linux, windows]
+    needs: [android, linux, windows, server]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: "{android,linux,windows}"
+          pattern: "{android,linux,windows,server}"
           merge-multiple: true
 
       - run: ls -la artifacts
@@ -2923,6 +4182,7 @@ jobs:
             **Android:** install the `.apk`.
             **Fedora:** `sudo dnf install ./FeynosNotes-*.rpm`
             **Windows:** run the `.exe` installer.
+            **Sync server:** use the attached `docker-compose.yml` (image `ghcr.io/feynos-lin/feynos-note-sync`). See the README for reverse proxy and OneNote import setup.
 
-            Backups: Settings (gear icon) → Backup. On desktop, add your Google Drive / Proton Drive folders. On Android, tap Back up now and pick Drive or Proton Drive.
+            Backups: Settings (gear icon). On desktop, add your Google Drive / Proton Drive folders. On Android, tap Back up now and pick Drive or Proton Drive.
           files: artifacts/*
