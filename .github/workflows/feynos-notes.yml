@@ -76,6 +76,9 @@ jobs:
                 <button class="text-btn" id="btnNewNotebook">
                   <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Notebook
                 </button>
+                <button class="text-btn" id="btnImport" title="Import from OneNote or PDF">
+                  <svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/></svg> Import
+                </button>
                 <button class="text-btn" id="btnBin" title="Recycle bin">
                   <svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg> <span id="binCount">Bin</span>
                 </button>
@@ -193,6 +196,7 @@ jobs:
 
           <input type="file" id="imgInput" accept="image/*" hidden multiple>
           <input type="file" id="restoreInput" hidden>
+          <input type="file" id="importInput" accept=".one,.onetoc2,.onepkg,.zip,.pdf,application/pdf,application/zip" hidden>
 
           <script src="cap-bundle.js"></script>
           <script src="platform.js"></script>
@@ -1360,6 +1364,31 @@ jobs:
             /* ---------------- OneNote import (runs on the server) ---------------- */
             const imp = (path, body) => { const sy = S.sync; return api(sy.url, '/api/import/onenote' + path, body, sy.token, 30000); };
 
+            /* ---------------- file import (OneNote packages, PDFs) - upload with progress ---------------- */
+            function uploadImport(file, params, onProgress) {
+              const sy = S.sync;
+              return new Promise((resolve, reject) => {
+                const q = new URLSearchParams({ name: file.name, ...params });
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', sy.url + '/api/import/file?' + q.toString());
+                xhr.setRequestHeader('Authorization', 'Bearer ' + sy.token);
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+                xhr.onload = () => {
+                  let data = null; try { data = JSON.parse(xhr.responseText); } catch (e) { /* not json */ }
+                  if (xhr.status === 413) return reject(new SyncError((data && data.error) || 'The file is bigger than your reverse proxy allows. Raise its upload limit (for Nginx: client_max_body_size).'));
+                  if (!data) return reject(new SyncError(`Upload failed (HTTP ${xhr.status}). If this is an older server image, update the container.`));
+                  if (xhr.status >= 400 || data.ok === false) return reject(new SyncError(data.error || 'Upload failed'));
+                  resolve(data);
+                };
+                xhr.onerror = () => reject(new SyncError("Upload failed - can't reach the server."));
+                xhr.ontimeout = () => reject(new SyncError('Upload timed out.'));
+                xhr.timeout = 60 * 60 * 1000;
+                xhr.send(file);
+              });
+            }
+            const fileJob = (path, id) => { const sy = S.sync; return api(sy.url, `/api/import/file/${path}?id=${encodeURIComponent(id)}`, path === 'cancel' ? {} : undefined, sy.token, 20000); };
+
             window.Sync = {
               hooks,
               normUrl,
@@ -1371,7 +1400,10 @@ jobs:
               importStart: () => imp('/start', {}),
               importChoose: ids => imp('/choose', { ids }),
               importCancel: () => imp('/cancel', {}),
-              importSignOut: () => imp('/signout', {})
+              importSignOut: () => imp('/signout', {}),
+              uploadImport,
+              importFileStatus: id => fileJob('status', id),
+              importFileCancel: id => fileJob('cancel', id)
             };
           })();
           FEYNOS_EOF
@@ -2648,6 +2680,7 @@ jobs:
                   <div class="row-inline" style="margin-top:12px">
                     <button class="btn primary" id="btnSyncNow">Sync now</button>
                     <button class="btn" id="btnImportOneNote">Import from OneNote (OneDrive)…</button>
+                    <button class="btn" id="btnImportFile2">Import OneNote / PDF file…</button>
                     <button class="btn danger" id="btnSyncOff">Disconnect</button>
                   </div>
                 </div>`;
@@ -2669,6 +2702,7 @@ jobs:
               if (q('#btnSyncNow')) {
                 q('#btnSyncNow').onclick = () => Sync.syncNow();
                 q('#btnImportOneNote').onclick = () => openImport();
+                q('#btnImportFile2').onclick = () => openImportMenu();
                 q('#btnSyncOff').onclick = async () => {
                   if (!await confirmDialog('Disconnect sync?', 'Your notes stay on this device, but changes will no longer sync until you connect again.', 'Disconnect', true)) return;
                   await Sync.disconnect(); updateSyncButton('off'); toast('Sync disconnected');
@@ -2689,6 +2723,97 @@ jobs:
               };
               q('#btnSyncConnect').onclick = go;
               q('#syPass').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+            }
+
+            /* Import chooser: OneNote online, or a file (.onepkg/.one/.onetoc2/.zip/.pdf) */
+            const importInput = $('#importInput');
+            function openImportMenu() {
+              if (!S.syncOn) {
+                openModal(`<h2>Import notes</h2>
+                  <p class="sub">Importing OneNote notebooks and PDFs runs on your Feynos Notes sync server, so your phone and PCs all get the result. Connect to your server first in Settings → Sync.</p>
+                  <div class="modal-actions"><button class="btn" data-x="no">Cancel</button><button class="btn primary" data-x="yes">Set up sync</button></div>`,
+                  (m, done) => { m.querySelector('[data-x=no]').onclick = () => done(); m.querySelector('[data-x=yes]').onclick = () => openSettings(); });
+                return;
+              }
+              openModal(`<h2>Import notes</h2>
+                <p class="sub">Bring notes in from OneNote or a PDF. Imports land on every device through sync.</p>
+                <div class="settings-section"><h3>OneNote file</h3><p class="hint">A notebook exported from OneNote for Windows (<b>File → Export → Notebook → .onepkg</b>), a single section (<b>.one</b>), a notebook folder's <b>.onetoc2</b>, or a notebook downloaded from OneDrive as a <b>.zip</b>.</p><button class="btn primary" data-x="file">Choose OneNote file…</button></div>
+                <div class="settings-section"><h3>PDF</h3><p class="hint">Any PDF, including pages printed from OneNote. Goes into the section you have open${state.sectionId && S.getSection(state.sectionId) ? ' (<b>' + esc(S.getSection(state.sectionId).name) + '</b>)' : ''}.</p><button class="btn" data-x="pdf">Choose PDF…</button></div>
+                <div class="settings-section"><h3>OneNote online</h3><p class="hint">Sign in to Microsoft and copy notebooks straight from OneDrive.</p><button class="btn" data-x="online">Import from OneDrive…</button></div>
+                <div class="modal-actions"><button class="btn" data-x="close">Cancel</button></div>`,
+                (m, done) => {
+                  m.querySelector('[data-x=close]').onclick = () => done();
+                  m.querySelector('[data-x=online]').onclick = () => openImport();
+                  m.querySelector('[data-x=file]').onclick = () => { importInput.accept = '.one,.onetoc2,.onepkg,.zip'; importInput.click(); };
+                  m.querySelector('[data-x=pdf]').onclick = () => { importInput.accept = '.pdf,application/pdf'; importInput.click(); };
+                });
+            }
+
+            importInput.addEventListener('change', async () => {
+              const file = importInput.files[0]; importInput.value = '';
+              if (!file) return;
+              const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+              const params = {};
+              if (isPdf) {
+                const mode = await openModal(`<h2>Import “${esc(file.name)}”</h2>
+                  <p class="sub">How should the PDF come in?</p>
+                  <div class="settings-section"><h3>Exact look</h3><p class="hint">Each PDF page as a picture - handwriting, drawings and layout stay exactly as they were. The text is still searchable.</p><button class="btn primary" data-m="look">Import as pages</button></div>
+                  <div class="settings-section"><h3>Editable text</h3><p class="hint">Just the text, as paragraphs you can edit. Pictures and handwriting are left out.</p><button class="btn" data-m="text">Import as text</button></div>
+                  <div class="modal-actions"><button class="btn" data-m="">Cancel</button></div>`,
+                  (m, done) => m.querySelectorAll('[data-m]').forEach(b => b.onclick = () => done(b.dataset.m || null)));
+                if (!mode) return;
+                params.mode = mode;
+                if (state.sectionId) params.section = state.sectionId;
+              }
+              runFileImport(file, params);
+            });
+
+            async function runFileImport(file, params) {
+              let jobId = null, timer = null, closed = false;
+              const mb = (file.size / 1048576).toFixed(file.size > 10485760 ? 0 : 1);
+              await openModal(`<h2>Importing “${esc(file.name)}”</h2>
+                <p class="sub" id="fiStage">Uploading ${mb} MB to your server…</p>
+                <div class="progress"><div id="fiBar" style="width:0%"></div></div>
+                <div class="hint ellipsis" id="fiCur"></div>
+                <div class="modal-actions"><button class="btn danger" data-x="stop">Stop</button><button class="btn primary" data-x="close">Close</button></div>`,
+                (m, done) => {
+                  el.modal.dataset.kind = 'fileimport';
+                  const stage = m.querySelector('#fiStage'), bar = m.querySelector('#fiBar'), cur = m.querySelector('#fiCur');
+                  // closing the window keeps the import going; it reports back with a toast
+                  const finish = () => { closed = true; done(); };
+                  m.querySelector('[data-x=close]').onclick = finish;
+                  m.querySelector('[data-x=stop]').onclick = async () => { clearInterval(timer); if (jobId) { try { await Sync.importFileCancel(jobId); } catch (e) { /* noop */ } } finish(); };
+                  const live = () => !closed && el.modal.dataset.kind === 'fileimport';
+                  Sync.uploadImport(file, params, f => { if (live()) bar.style.width = Math.round(f * 100) + '%'; })
+                    .then(job => {
+                      jobId = job.id;
+                      if (live()) { stage.textContent = 'Converting on your server…'; bar.style.width = '0%'; }
+                      timer = setInterval(async () => {
+                        let st; try { st = await Sync.importFileStatus(jobId); } catch (e) { return; }
+                        if (st.progress && st.progress.total && live()) { bar.style.width = Math.round(st.progress.done / st.progress.total * 100) + '%'; stage.textContent = `Importing… ${st.progress.done} of ${st.progress.total} ${st.kind === 'pdf' ? 'PDF pages' : 'pages'}`; }
+                        if (live()) cur.textContent = st.message || (st.progress && st.progress.current) || '';
+                        if (st.state === 'importing' || st.state === 'done') Sync.schedule(0);
+                        if (st.state === 'done') {
+                          clearInterval(timer);
+                          const r = st.result || {};
+                          const msg = `Imported ${r.pages || 0} page${r.pages === 1 ? '' : 's'}${r.sections ? ` in ${r.sections} section${r.sections === 1 ? '' : 's'}` : ''}${r.skipped ? `, ${r.skipped} unchanged or edited here (kept)` : ''}${r.failed ? `, ${r.failed} failed` : ''}`;
+                          Sync.syncNow();
+                          if (live()) {
+                            stage.innerHTML = `<b style="color:var(--ok)">Done.</b> ${esc(msg)}.`; bar.style.width = '100%'; cur.textContent = st.message || '';
+                            m.querySelector('[data-x=stop]').hidden = true;
+                          } else toast(msg);
+                        } else if (st.state === 'error') {
+                          clearInterval(timer);
+                          if (live()) { stage.innerHTML = `<span style="color:var(--danger)">${esc(st.message || 'Import failed')}</span>`; m.querySelector('[data-x=stop]').hidden = true; }
+                          else toast('Import failed: ' + (st.message || ''), null, null, 7000);
+                        }
+                      }, 1500);
+                    })
+                    .catch(err => {
+                      if (live()) { stage.innerHTML = `<span style="color:var(--danger)">${esc(err.message)}</span>`; m.querySelector('[data-x=stop]').hidden = true; }
+                      else toast(err.message, null, null, 7000);
+                    });
+                });
             }
 
             /* OneNote import: sign-in and the heavy lifting happen on the server */
@@ -2782,6 +2907,7 @@ jobs:
 
             $('#btnNewNotebook').onclick = newNotebook;
             $('#btnBin').onclick = openBin;
+            $('#btnImport').onclick = () => openImportMenu();
             $('#btnSettings').onclick = () => openSettings();
             $('#btnNewPage').onclick = () => newPage();
             $('#btnEmptyNew').onclick = () => newPage();
@@ -3199,6 +3325,7 @@ jobs:
           import zlib from 'node:zlib';
           import { DatabaseSync } from 'node:sqlite';
           import { createOneNoteImporter } from './onenote.mjs';
+          import { createFileImporter } from './fileimport.mjs';
 
           const VERSION = '__APP_VERSION__';
           const env = process.env;
@@ -3209,6 +3336,7 @@ jobs:
           const MAX_BODY = Math.max(1, parseFloat(env.MAX_BODY_MB || '200')) * 1024 * 1024;
           const CORS_ORIGINS = (env.CORS_ORIGINS || '*').split(',').map(s => s.trim()).filter(Boolean);
           const PULL_LIMIT_BYTES = 16 * 1024 * 1024;
+          const IMPORT_MAX = Math.max(1, parseFloat(env.IMPORT_MAX_MB || '2048')) * 1024 * 1024;
 
           function readPassword() {
             if (env.FEYNOS_PASSWORD_FILE) {
@@ -3404,7 +3532,18 @@ jobs:
           const allOfType = db.prepare('SELECT data FROM records WHERE type = ? AND deleted = 0');
           const importStore = {
             get(id) { const r = q.get.get(id); return r ? { ...(r.data ? JSON.parse(r.data) : {}), deleted: !!r.deleted, updated: r.updated } : null; },
-            maxOrder(type) { let m = -1; for (const r of allOfType.all(type)) { const o = JSON.parse(r.data).order; if (typeof o === 'number' && o > m) m = o; } return m; },
+            // "notebook", or "section:<notebookId>" / "page:<sectionId>" for children of one parent
+            maxOrder(spec) {
+              const [type, parent] = spec.split(':');
+              const key = type === 'page' ? 'sectionId' : type === 'section' ? 'notebookId' : null;
+              let m = -1;
+              for (const r of allOfType.all(type)) {
+                const d = JSON.parse(r.data);
+                if (parent && key && d[key] !== parent) continue;
+                if (typeof d.order === 'number' && d.order > m) m = d.order;
+              }
+              return m;
+            },
             write(type, id, data, updated) {
               db.exec('BEGIN IMMEDIATE');
               try {
@@ -3423,6 +3562,23 @@ jobs:
             store: importStore,
             log: (...a) => console.log(...a)
           });
+
+          const fileImport = createFileImporter({ dataDir: DATA_DIR, store: importStore, log: (...a) => console.log(...a) });
+
+          function saveUpload(req, dest) {
+            return new Promise((resolve, reject) => {
+              let size = 0;
+              const out = fs.createWriteStream(dest);
+              req.on('data', c => {
+                size += c.length;
+                if (size > IMPORT_MAX) { req.destroy(); out.destroy(); fs.rm(dest, { force: true }, () => {}); reject(Object.assign(new Error(`File too large (limit ${env.IMPORT_MAX_MB || 2048} MB)`), { status: 413 })); }
+              });
+              req.pipe(out);
+              out.on('finish', () => resolve(size));
+              out.on('error', reject);
+              req.on('error', reject);
+            });
+          }
 
           /* ---------------- http ---------------- */
           const STATUS_PAGE = () => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Feynos Notes Sync</title>
@@ -3487,6 +3643,16 @@ jobs:
                 const pulled = b.pull === false ? { changes: [], seq: since, more: getSeq() > since } : pullSince(since);
                 return send(req, res, 200, { ok: true, serverId: SERVER_ID, results, ...pulled });
               }
+              if (p === '/api/import/file' && req.method === 'POST') {
+                const dest = fileImport.newUploadPath();
+                const size = await saveUpload(req, dest);
+                if (!size) { fs.rm(dest, { force: true }, () => {}); return fail(req, res, 400, 'The file was empty'); }
+                return send(req, res, 200, fileImport.start({ file: dest, name: url.searchParams.get('name') || 'import', mode: url.searchParams.get('mode'), sectionId: url.searchParams.get('section') }));
+              }
+              if (p === '/api/import/file/status' || p === '/api/import/file/cancel') {
+                const j = p.endsWith('cancel') ? fileImport.cancel(url.searchParams.get('id')) : fileImport.status(url.searchParams.get('id'));
+                return j ? send(req, res, 200, j) : fail(req, res, 404, 'Import not found');
+              }
               if (p.startsWith('/api/import/onenote/')) {
                 const action = p.slice('/api/import/onenote/'.length);
                 if (req.method === 'GET' && action === 'status') return send(req, res, 200, onenote.status());
@@ -3523,10 +3689,10 @@ jobs:
 
           const GRAPH = 'https://graph.microsoft.com/v1.0';
           const SCOPE = 'Notes.Read User.Read offline_access';
-          const COLORS = ['#7b3fb0', '#2f6fdb', '#1f9e89', '#4d9a2a', '#d9a400', '#e0712b', '#d2344a', '#c2408f', '#6b6f7a', '#0b8bb3'];
+          export const COLORS = ['#7b3fb0', '#2f6fdb', '#1f9e89', '#4d9a2a', '#d9a400', '#e0712b', '#d2344a', '#c2408f', '#6b6f7a', '#0b8bb3'];
           const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
-          const rid = (kind, oneId) => 'on' + kind[0] + crypto.createHash('sha1').update(oneId).digest('hex').slice(0, 20);
+          export const rid = (kind, oneId) => 'on' + kind[0] + crypto.createHash('sha1').update(oneId).digest('hex').slice(0, 20);
           const escHtml = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
           /* ===================================================================
@@ -3534,7 +3700,7 @@ jobs:
              =================================================================== */
           const DROP_STYLE = /^(position|left|top|right|bottom|z-index|font-family|line-height|margin(-\w+)?)$/i;
           function cleanStyle(tag, style) {
-            const keepSize = /^(img|table|td|th|col)$/i.test(tag);
+            const keepSize = /^(img|table|td|th|col|svg)$/i.test(tag);
             const out = [];
             for (const decl of style.split(';')) {
               const i = decl.indexOf(':'); if (i < 0) continue;
@@ -3545,6 +3711,16 @@ jobs:
               out.push(prop + ':' + val);
             }
             return out.join(';');
+          }
+
+          /* tidy every tag's attributes: OneNote's canvas positions don't apply to a flowing page */
+          export function tidyTags(h) {
+            return h.replace(/<([a-z][a-z0-9]*)\b([^>]*)>/gi, (all, tag, attrs) => {
+              if (!attrs.trim()) return all;
+              let a = attrs.replace(/\s(data-id|data-absolute-enabled|data-render-original-src|data-src-type|data-fullres-src-type|data-index|lang)="[^"]*"/gi, '');
+              a = a.replace(/\sstyle="([^"]*)"/i, (s, st) => { const c = cleanStyle(tag, st); return c ? ` style="${c}"` : ''; });
+              return `<${tag}${a}>`;
+            });
           }
 
           const TAG_CHIPS = {
@@ -3595,13 +3771,7 @@ jobs:
             });
             h = h.replace(/<\/ul>\s*<ul class="todo">/g, '');
 
-            // tidy every tag's attributes: OneNote's canvas positions don't apply to a flowing page
-            h = h.replace(/<([a-z][a-z0-9]*)\b([^>]*)>/gi, (all, tag, attrs) => {
-              if (!attrs.trim()) return all;
-              let a = attrs.replace(/\s(data-id|data-absolute-enabled|data-render-original-src|data-src-type|data-fullres-src-type|data-index|lang)="[^"]*"/gi, '');
-              a = a.replace(/\sstyle="([^"]*)"/i, (s, st) => { const c = cleanStyle(tag, st); return c ? ` style="${c}"` : ''; });
-              return `<${tag}${a}>`;
-            });
+            h = tidyTags(h);
 
             // images: pull each one down and embed it so the page works offline everywhere
             const imgs = [...h.matchAll(/<img\b[^>]*>/gi)];
@@ -3832,14 +4002,372 @@ jobs:
           }
           FEYNOS_EOF
 
+          mkdir -p "$(dirname src/server/fileimport.mjs)"
+          cat > src/server/fileimport.mjs <<'FEYNOS_EOF'
+          // Feynos Notes - import uploaded files: OneNote (.one, .onetoc2, .onepkg, OneDrive .zip) and PDF
+          // OneNote files are converted with one2html (MIT, github.com/msiemens/one2html); PDFs with Poppler.
+          import { spawn } from 'node:child_process';
+          import fs from 'node:fs/promises';
+          import fss from 'node:fs';
+          import path from 'node:path';
+          import crypto from 'node:crypto';
+          import { tidyTags as tidyHtml, rid, COLORS } from './onenote.mjs';
+
+          const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+          const PDF_MAX_PAGES = 600;
+          const PDF_PAGES_PER_NOTE = 40;
+          const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', svg: 'image/svg+xml', tif: 'image/tiff', tiff: 'image/tiff', emf: 'image/emf', wmf: 'image/wmf' };
+          const decodeEntities = s => String(s || '').replace(/&(amp|lt|gt|quot|#39|#x27|apos);/g, m => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&#x27;': "'", '&apos;': "'" }[m]));
+          const escHtml = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+          const safeDecode = s => { try { return decodeURIComponent(s); } catch { return s; } };
+
+          function run(cmd, args, opts = {}) {
+            return new Promise((resolve, reject) => {
+              const p = spawn(cmd, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+              const out = []; let err = '';
+              p.stdout.on('data', d => out.push(d));
+              p.stderr.on('data', d => { err = (err + d).slice(-4000); });
+              const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error(`${cmd} took too long`)); }, opts.timeout || 15 * 60 * 1000);
+              p.on('error', e => { clearTimeout(timer); reject(e.code === 'ENOENT' ? new Error(`${cmd} is not installed in this container`) : e); });
+              p.on('close', code => {
+                clearTimeout(timer);
+                if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
+                else reject(new Error(`${cmd} failed: ${err.trim().split('\n').slice(-3).join(' ') || 'exit ' + code}`));
+              });
+            });
+          }
+
+          async function walk(dir) {
+            const out = [];
+            for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+              const p = path.join(dir, e.name);
+              if (e.isDirectory()) out.push(...await walk(p)); else out.push(p);
+            }
+            return out;
+          }
+
+          /* remove an element and everything inside it, counting nested tags of the same name */
+          function removeElement(html, startIdx, tag) {
+            const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi');
+            re.lastIndex = startIdx;
+            let depth = 0, m;
+            while ((m = re.exec(html))) {
+              depth += m[1] ? -1 : 1;
+              if (depth === 0) return html.slice(0, startIdx) + html.slice(re.lastIndex);
+            }
+            return html;
+          }
+
+          async function detectKind(file, name) {
+            const fh = await fs.open(file, 'r');
+            const buf = Buffer.alloc(16);
+            await fh.read(buf, 0, 16, 0); await fh.close();
+            if (buf.subarray(0, 4).toString('latin1') === '%PDF') return 'pdf';
+            if (buf.subarray(0, 4).toString('latin1') === 'MSCF') return 'onepkg';
+            if (buf[0] === 0x50 && buf[1] === 0x4b) return 'zip';
+            const ext = path.extname(name).toLowerCase();
+            if (ext === '.onetoc2') return 'onetoc2';
+            if (ext === '.one') return 'one';
+            if (ext === '.pdf') return 'pdf';
+            return 'one';
+          }
+
+          export function createFileImporter({ dataDir, store, log }) {
+            const jobs = new Map();
+            const tmpRoot = path.resolve(dataDir, 'tmp');
+            fss.rmSync(tmpRoot, { recursive: true, force: true }); // leftovers from a crash
+            fss.mkdirSync(tmpRoot, { recursive: true });
+
+            const pub = j => ({ ok: true, id: j.id, name: j.name, kind: j.kind, state: j.state, message: j.message, progress: j.progress, result: j.result });
+
+            /* ---------------- writing records ---------------- */
+            function ensureNotebook(id, name, stats) {
+              if (!store.get(id)) {
+                const order = store.maxOrder('notebook') + 1;
+                store.write('notebook', id, { id, name, color: COLORS[order % COLORS.length], order, updated: Date.now() });
+                stats.notebooks++;
+              }
+              return id;
+            }
+            function ensureSection(id, notebookId, name, color, order, stats) {
+              if (!store.get(id)) {
+                store.write('section', id, { id, notebookId, name, color: color || COLORS[(order + 1) % COLORS.length], order, updated: Date.now() });
+                stats.sections++;
+              }
+              return id;
+            }
+            function writePage(id, data, stats) {
+              const existing = store.get(id);
+              if (existing && (existing.deleted || existing.updated >= data.updated)) { stats.skipped++; return; }
+              store.write('page', id, { deleted: null, ...data, id }, data.updated);
+              stats.pages++;
+            }
+
+            /* ---------------- PDF ---------------- */
+            async function importPdf(job, file, work) {
+              const info = await run('pdfinfo', [file]);
+              let pages = parseInt((info.match(/^Pages:\s+(\d+)/m) || [])[1] || '0', 10);
+              if (!pages) throw new Error("That PDF has no pages, or it's password protected.");
+              if (pages > PDF_MAX_PAGES) { job.message = `Only the first ${PDF_MAX_PAGES} of ${pages} pages will be imported.`; pages = PDF_MAX_PAGES; }
+              job.progress = { done: 0, total: pages, current: '' };
+              const stats = { notebooks: 0, sections: 0, pages: 0, skipped: 0, failed: 0 };
+
+              // where to put it: the section the person was looking at, or an "Imported" notebook
+              let sectionId = job.sectionId && store.get(job.sectionId) && !store.get(job.sectionId).deleted ? job.sectionId : null;
+              if (!sectionId) {
+                const nb = ensureNotebook('imp-notebook', 'Imported', stats);
+                sectionId = ensureSection('imp-pdfs', nb, 'PDFs', '#d2344a', 0, stats);
+              }
+              const title = job.name.replace(/\.pdf$/i, '');
+              const parts = [];
+              for (let i = 1; i <= pages; i++) {
+                if (job.cancel) throw new Error('cancelled');
+                job.progress.current = `Page ${i} of ${pages}`;
+                const text = (await run('pdftotext', ['-f', String(i), '-l', String(i), '-enc', 'UTF-8', file, '-']).catch(() => '')).replace(/\f/g, '').trim();
+                let html = '';
+                if (job.mode === 'text') {
+                  const paras = text.split(/\n\s*\n/).map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+                  html = paras.map(p => `<p>${escHtml(p)}</p>`).join('') || '<p><i>(no text on this page)</i></p>';
+                  if (i < pages) html += '<hr>';
+                } else {
+                  const prefix = path.join(work, 'pg');
+                  await run('pdftoppm', ['-f', String(i), '-l', String(i), '-r', '110', '-jpeg', '-jpegopt', 'quality=80', '-singlefile', file, prefix]);
+                  const img = await fs.readFile(prefix + '.jpg');
+                  await fs.unlink(prefix + '.jpg').catch(() => {});
+                  html = `<p><img src="data:image/jpeg;base64,${img.toString('base64')}" alt="Page ${i}" style="width:100%"></p>`;
+                  if (text) html += `<div class="pdf-text" hidden>${escHtml(text)}</div>`;
+                }
+                parts.push(html);
+                job.progress.done = i;
+              }
+              // very long PDFs become several notes so each one stays quick to open and sync
+              const chunks = [];
+              for (let i = 0; i < parts.length; i += PDF_PAGES_PER_NOTE) chunks.push(parts.slice(i, i + PDF_PAGES_PER_NOTE));
+              const base = store.maxOrder('page:' + sectionId) + 1;
+              const stamp = Date.now();
+              chunks.forEach((c, k) => {
+                const id = 'pdf' + crypto.randomBytes(8).toString('hex');
+                writePage(id, {
+                  sectionId, title: chunks.length > 1 ? `${title} (part ${k + 1} of ${chunks.length})` : title,
+                  html: c.join(''), level: 0, order: base + k, created: stamp, updated: stamp
+                }, stats);
+              });
+              return stats;
+            }
+
+            /* ---------------- OneNote ---------------- */
+            async function oneNoteInputs(job, file, work) {
+              const ext = { one: '.one', onetoc2: '.onetoc2', onepkg: '.onepkg' }[job.kind];
+              if (ext) {
+                const named = path.join(work, 'in', path.basename(job.name, path.extname(job.name)).replace(/[^\w .-]+/g, '_') + ext);
+                await fs.mkdir(path.dirname(named), { recursive: true });
+                await fs.rename(file, named);
+                return [named];
+              }
+              // OneDrive "Download" of a notebook: a zip full of .one files (and maybe .onetoc2)
+              const dir = path.join(work, 'unzip');
+              await fs.mkdir(dir, { recursive: true });
+              await run('unzip', ['-qq', '-o', file, '-d', dir]);
+              const files = (await walk(dir)).filter(f => !/OneNote_RecycleBin/i.test(f));
+              const one = files.filter(f => /\.one$/i.test(f));
+              const toc = files.filter(f => /\.onetoc2$/i.test(f)).sort((a, b) => a.split(path.sep).length - b.split(path.sep).length);
+              const pkg = files.filter(f => /\.onepkg$/i.test(f));
+              if (pkg.length) return pkg;
+              // the top-most table of contents describes the whole notebook (sections + groups)
+              if (toc.length) return [toc[0]];
+              if (one.length) return one;
+              throw new Error("That zip doesn't contain any OneNote files.");
+            }
+
+            async function importOneNote(job, file, work) {
+              job.progress = { done: 0, total: 0, current: 'Converting OneNote file…' };
+              const inputs = await oneNoteInputs(job, file, work);
+              const out = path.join(work, 'out');
+              await run('one2html', ['-i', ...inputs, '-o', out, '--note-tag-icons', 'emoji']);
+
+              const htmlFiles = (await walk(out)).filter(f => f.toLowerCase().endsWith('.html'));
+              const docs = new Map();
+              for (const f of htmlFiles) docs.set(f, await fs.readFile(f, 'utf8'));
+              const linksOf = (file, html, target) => {
+                const re = new RegExp(`<a href="([^"]*)" target="${target}"(?: class="l(\\d+)( warnings)?")?[^>]*>`, 'g');
+                return [...html.matchAll(re)].map(m => ({ file: path.resolve(path.dirname(file), m[1].split('/').map(safeDecode).join(path.sep)), level: parseInt(m[2] || '1', 10), warnings: !!m[3], raw: m[0] }));
+              };
+              const titleOf = html => decodeEntities((html.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '').trim();
+
+              // notebook tables of contents link to sections; section ones link to pages
+              const sectionNotebook = new Map(); // section toc file -> {name, dir, color}
+              const notebooks = [];
+              for (const [f, html] of docs) {
+                if (!html.includes('target="section"')) continue;
+                const nbName = titleOf(html) || 'Imported notebook';
+                notebooks.push(nbName);
+                for (const m of html.matchAll(/<li style="([^"]*)">\s*<a href="([^"]*)\.html" target="section"/g)) {
+                  const tocFile = path.resolve(path.dirname(f), m[2].split('/').map(safeDecode).join(path.sep) + '.html');
+                  const c = m[1].match(/border-left-color:\s*rgba\((\d+),\s*(\d+),\s*(\d+)/);
+                  const color = c ? '#' + [c[1], c[2], c[3]].map(x => (+x).toString(16).padStart(2, '0')).join('') : null;
+                  sectionNotebook.set(tocFile, { name: nbName, dir: path.join(path.dirname(f), path.basename(f, '.html')), color });
+                }
+              }
+              const sections = [];
+              for (const [f, html] of docs) {
+                if (!html.includes('target="content"')) continue;
+                const pages = linksOf(f, html, 'content').filter(l => !l.warnings && docs.has(l.file));
+                sections.push({ file: f, name: titleOf(html) || path.basename(f, '.html'), pages, nb: sectionNotebook.get(f) });
+              }
+              if (!sections.length) throw new Error('No pages were found in that file.');
+              job.progress.total = sections.reduce((a, s) => a + s.pages.length, 0);
+
+              const stats = { notebooks: 0, sections: 0, pages: 0, skipped: 0, failed: 0 };
+              const fallbackNb = path.basename(job.name, path.extname(job.name)) || 'Imported notebook';
+              const secOrder = new Map();
+              for (const sec of sections.sort((a, b) => a.file.localeCompare(b.file))) {
+                const nbName = sec.nb ? sec.nb.name : fallbackNb;
+                const nbId = ensureNotebook(rid('notebook', 'file:' + nbName), nbName, stats);
+                // sections inside section groups get the group's name in front
+                let secName = sec.name;
+                if (sec.nb) {
+                  const rel = path.relative(sec.nb.dir, path.dirname(sec.file));
+                  if (rel && !rel.startsWith('..')) secName = rel.split(path.sep).join(' › ') + ' › ' + secName;
+                }
+                const ord = secOrder.get(nbId) || 0; secOrder.set(nbId, ord + 1);
+                const secId = ensureSection(rid('section', 'file:' + nbName + '/' + secName), nbId, secName, sec.nb && sec.nb.color, store.maxOrder('section:' + nbId) + 1, stats);
+
+                const minLevel = Math.min(...sec.pages.map(p => p.level), 1);
+                let order = 0;
+                for (const link of sec.pages) {
+                  if (job.cancel) throw new Error('cancelled');
+                  const raw = docs.get(link.file);
+                  const title = titleOf(raw);
+                  job.progress.current = `${nbName} › ${secName} › ${title || 'Untitled page'}`;
+                  try {
+                    const meta = n => (raw.match(new RegExp(`<meta name="${n}" content="([^"]*)"`)) || [])[1] || '';
+                    const pageKey = meta('X-Original-Page-Id') || (secName + '/' + title + '/' + order);
+                    const updated = Date.parse(meta('X-Updated-Time')) || Date.now();
+                    const created = Date.parse(meta('X-Created-Time')) || updated;
+                    writePage(rid('page', 'file:' + nbName + '/' + pageKey), {
+                      sectionId: secId, title, html: await convertOne2HtmlPage(raw, path.dirname(link.file)),
+                      level: link.level > minLevel ? 1 : 0, order: order, created, updated
+                    }, stats);
+                  } catch (e) {
+                    log(`page failed (${title}):`, e.message);
+                    stats.failed++;
+                  }
+                  order++;
+                  job.progress.done++;
+                }
+              }
+              return stats;
+            }
+
+            /* one2html page -> Feynos Notes page body */
+            async function convertOne2HtmlPage(raw, dir) {
+              let body = (raw.match(/<body[^>]*>([\s\S]*?)(<script\b|<\/body>)/i) || [])[1] || '';
+              // the page title is already the note's title
+              const t = body.search(/<div class="title"/);
+              if (t >= 0) body = removeElement(body, t, 'div');
+              // embedded audio/video/files: note them, they aren't imported
+              body = body.replace(/<(audio|video)\b[^>]*src="([^"]*)"[^>]*>(?:[\s\S]*?<\/\1>)?/gi, (a, tag, src) => `<p>📎 ${escHtml(safeDecode(src))} <i>(attachment not imported)</i></p>`);
+              body = body.replace(/<embed\b[^>]*src="([^"]*)"[^>]*\/?>/gi, (a, src) => `<p>📎 ${escHtml(safeDecode(src))} <i>(attachment not imported)</i></p>`);
+              // pictures: embed the files one2html wrote next to the page
+              const imgs = [...body.matchAll(/<img\b[^>]*>/gi)];
+              let out = ''; let last = 0;
+              for (const im of imgs) {
+                out += body.slice(last, im.index); last = im.index + im[0].length;
+                const src = (im[0].match(/\ssrc="([^"]*)"/i) || [])[1] || '';
+                const rest = im[0].replace(/\ssrc="[^"]*"/i, '');
+                if (/^data:image\//i.test(src)) { out += im[0]; continue; }
+                const file = path.resolve(dir, safeDecode(decodeEntities(src)));
+                const ext = path.extname(file).slice(1).toLowerCase();
+                let data = null;
+                if (file.startsWith(dir + path.sep)) {
+                  try { const st = await fs.stat(file); if (st.size <= MAX_IMAGE_BYTES) data = await fs.readFile(file); } catch { /* missing */ }
+                }
+                const mime = MIME[ext] || (data && data[0] === 0x89 ? 'image/png' : data && data[0] === 0xff ? 'image/jpeg' : null);
+                out += data && mime && !['image/emf', 'image/wmf', 'image/tiff'].includes(mime)
+                  ? rest.replace(/^<img/i, `<img src="data:${mime};base64,${data.toString('base64')}"`)
+                  : `<p><i>[picture couldn't be imported]</i></p>`;
+              }
+              out += body.slice(last);
+              // OneNote's canvas positions and fonts don't apply to a flowing page
+              out = tidyHtml(out);
+              // emoji check boxes from note tags -> real to-do items
+              for (let guard = 0; guard < 5000; guard++) {
+                const i = out.search(/<span class="note-tag-icon/);
+                if (i < 0) break;
+                const open = out.slice(i, out.indexOf('>', i) + 1);
+                const done = /aria-checked="true"/.test(open);
+                const isBox = /-checkbox/.test(open);
+                const inner = out.slice(i).match(/<span class="text">([^<]*)<\/span>/);
+                const symbol = isBox ? (done ? '☑' : '☐') : (inner ? inner[1] : '');
+                out = removeElement(out, i, 'span');
+                out = out.slice(0, i) + (symbol ? symbol + ' ' : '') + out.slice(i);
+              }
+              // lines that start with a check box become real to-do items
+              out = out.replace(/<(div|p)\b([^>]*)>\s*(☐|☑)\s*((?:(?!<\/?(?:div|p)\b)[\s\S])*?)<\/\1>/g,
+                (m, tag, a, box, inner) => `<ul class="todo"><li data-done="${box === '☑'}">${inner.trim()}</li></ul>`);
+              out = out.replace(/<\/ul>\s*<ul class="todo">/g, '');
+              return out.replace(/<div>\s*<\/div>/gi, '').trim();
+            }
+
+            /* ---------------- jobs ---------------- */
+            async function runJob(job, file) {
+              const work = path.join(tmpRoot, job.id);
+              try {
+                job.kind = await detectKind(file, job.name);
+                job.state = 'importing';
+                job.result = job.kind === 'pdf' ? await importPdf(job, file, work) : await importOneNote(job, file, work);
+                job.state = 'done';
+                job.progress.current = '';
+              } catch (e) {
+                job.state = 'error';
+                job.message = e.message === 'cancelled' ? 'Import stopped.' : e.message;
+                if (e.message !== 'cancelled') log('file import failed:', e);
+              } finally {
+                fs.rm(work, { recursive: true, force: true }).catch(() => {});
+                fs.rm(file, { force: true }).catch(() => {});
+                // keep only recent jobs
+                const ids = [...jobs.keys()]; while (ids.length > 30) jobs.delete(ids.shift());
+              }
+            }
+
+            return {
+              tmpDir: tmpRoot,
+              newUploadPath() { return path.join(tmpRoot, 'upload-' + crypto.randomBytes(8).toString('hex')); },
+              start({ file, name, mode, sectionId }) {
+                const job = {
+                  id: crypto.randomBytes(6).toString('hex'), name: String(name || 'import').slice(0, 200), kind: '',
+                  mode: mode === 'text' ? 'text' : 'look', sectionId: sectionId || '', state: 'converting', message: '',
+                  progress: { done: 0, total: 0, current: 'Reading the file…' }, result: null, cancel: false
+                };
+                fss.mkdirSync(path.join(tmpRoot, job.id), { recursive: true });
+                jobs.set(job.id, job);
+                runJob(job, file);
+                return pub(job);
+              },
+              status(id) { const j = jobs.get(id); return j ? pub(j) : null; },
+              cancel(id) { const j = jobs.get(id); if (j) j.cancel = true; return j ? pub(j) : null; }
+            };
+          }
+          FEYNOS_EOF
+
           mkdir -p "$(dirname src/server/Dockerfile)"
           cat > src/server/Dockerfile <<'FEYNOS_EOF'
+          # ---- stage 1: build one2html (MIT, github.com/msiemens/one2html) for OneNote file import ----
+          FROM rust:1-alpine AS one2html
+          RUN apk add --no-cache musl-dev git
+          RUN cargo install --locked --root /out \
+                --git https://github.com/msiemens/one2html --rev 5beb00ee051793910736f8be3afeb27c108c247e one2html
+
+          # ---- stage 2: the sync server ----
           FROM node:24-alpine
           LABEL org.opencontainers.image.source="https://github.com/Feynos-Lin/feynos-note" \
                 org.opencontainers.image.title="Feynos Notes sync server" \
-                org.opencontainers.image.description="Self-hosted sync for Feynos Notes, with OneNote import"
+                org.opencontainers.image.description="Self-hosted sync for Feynos Notes, with OneNote and PDF import"
+          # poppler-utils: PDF import, unzip: OneDrive notebook downloads
+          RUN apk add --no-cache poppler-utils unzip
+          COPY --from=one2html /out/bin/one2html /usr/local/bin/one2html
           WORKDIR /app
-          COPY server.mjs onenote.mjs ./
+          COPY server.mjs onenote.mjs fileimport.mjs ./
           ENV NODE_ENV=production PORT=8787 DATA_DIR=/data NODE_NO_WARNINGS=1
           RUN mkdir -p /data && chown node:node /data
           USER node
@@ -4184,13 +4712,46 @@ jobs:
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8787/notes/api/health; then ok=1; break; fi; sleep 1; done
           [ -n "$ok" ] || fail "health check never answered"
           curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' http://127.0.0.1:8787/notes/api/login | grep -q token || fail "login failed"
+          echo "::group::Import test"
+          B=http://127.0.0.1:8787
+          TOKEN=$(curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' $B/api/login | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          git clone -q --depth 1 https://github.com/msiemens/onenote.rs /tmp/onrs
+          imp() {
+            local q; q=$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))' "$2")
+            local id; id=$(curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/octet-stream' --data-binary @"$1" "$B/api/import/file?name=$q" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+            local s=""
+            for i in $(seq 1 180); do s=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$B/api/import/file/status?id=$id"); echo "$s" | grep -q '"state":"\(done\|error\)"' && break; sleep 1; done
+            echo "$s" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["state"],d.get("kind"),d.get("message",""),d.get("result"))'
+          }
+          R1=$(imp "/tmp/onrs/crates/parser/tests/samples/New Section 1.one" "New Section 1.one")
+          python3 -c 'import zipfile,os;z=zipfile.ZipFile("/tmp/second.zip","w");b="/tmp/onrs/crates/parser/tests/samples/joplin";[z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f),b)) for r,_,fs in os.walk(b+"/Second") for f in fs]'
+          R2=$(imp /tmp/second.zip "Second.zip")
+          echo "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUiA1IDAgUl0gL0NvdW50IDIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA3IDAgUiA+PiA+PiAvQ29udGVudHMgNCAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA4MSA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDcyIDcyMCBUZCAoTWVldGluZyBub3RlcykgVGogMCAtMzAgVGQgKEJ1ZGdldCBhcHByb3ZlZCBmb3IgUTMpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvUGFnZSAvUGFyZW50IDIgMCBSIC9NZWRpYUJveCBbMCAwIDYxMiA3OTJdIC9SZXNvdXJjZXMgPDwgL0ZvbnQgPDwgL0YxIDcgMCBSID4+ID4+IC9Db250ZW50cyA2IDAgUiA+PgplbmRvYmoKNiAwIG9iago8PCAvTGVuZ3RoIDgzID4+CnN0cmVhbQpCVCAvRjEgMTggVGYgNzIgNzIwIFRkIChBY3Rpb24gaXRlbXMpIFRqIDAgLTMwIFRkIChDYWxsIHRoZSBwbHVtYmVyIHRvbW9ycm93KSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCjcgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgOAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDM3OCAwMDAwMCBuIAowMDAwMDAwNTA0IDAwMDAwIG4gCjAwMDAwMDA2MzcgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA4IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo3MDcKJSVFT0YK" | base64 -d > /tmp/t.pdf
+          R3=$(imp /tmp/t.pdf "Meeting notes.pdf")
+          curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -d '{"since":0,"changes":[]}' $B/api/sync > /tmp/all.json
+          SUMMARY=$(python3 - <<'PY'
+          import json, re
+          d = json.load(open('/tmp/all.json'))['changes']
+          nb = {r['id']: r['data']['name'] for r in d if r['type'] == 'notebook'}
+          sec = {r['id']: (nb.get(r['data']['notebookId'], '?') + ' > ' + r['data']['name']) for r in d if r['type'] == 'section'}
+          out = []
+          for r in d:
+              if r['type'] != 'page': continue
+              p = r['data']; h = re.sub(r'base64,[A-Za-z0-9+/=]+', 'base64,...', p['html'])
+              out.append(f"[{sec.get(p['sectionId'], '?')}] {p['title']} (lvl {p['level']}, {len(p['html'])}b): {h[:220]}")
+          print(f"{len(out)} pages || " + ' || '.join(out[:14]))
+          PY
+          )
+          echo "::endgroup::"
+          echo "::notice title=Import test::ONE=$R1 ## ZIP=$R2 ## PDF=$R3 ## $(echo "$SUMMARY" | tr -s '[:space:]' ' ' | cut -c1-6000)"
+          for r in "$R1" "$R2" "$R3"; do case "$r" in done*) ;; *) fail "import failed: $r";; esac; done
           docker logs fns-test
 
       - name: Publish image
         uses: docker/build-push-action@v6
         with:
           context: src/server
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ghcr.io/feynos-lin/feynos-note-sync:latest

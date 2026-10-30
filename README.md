@@ -8,7 +8,8 @@ builds everything and publishes it under **Releases**; the server image goes to 
 - Rich text: headings, colors, highlight, lists, to-do checkboxes, tags, tables, links, pictures, sketches
 - Search across every page, recycle bin, light/dark theme
 - **Live sync** between all your devices through your own server (works behind a reverse proxy)
-- **Import OneNote notebooks from OneDrive**
+- **Import OneNote notebooks** — straight from OneDrive, or from a `.onepkg` / `.one` / `.onetoc2` / OneDrive `.zip` file
+- **Import PDFs** — as exact page images (text still searchable) or as editable text
 - **Backups to Google Drive & Proton Drive** (desktop: sync folders; Android: share sheet) and restore from file
 
 ---
@@ -33,6 +34,7 @@ If two devices edit the same page before syncing, both versions are kept (the se
 | `BASE_PATH` | *(none)* | Serve under a sub-path, e.g. `/notes` for `https://example.com/notes`. Works whether or not the proxy strips the prefix. |
 | `MAX_BODY_MB` | `200` | Largest single upload. Keep your proxy's limit at least this high. |
 | `CORS_ORIGINS` | `*` | Allowed browser origins. Sign-in uses tokens, not cookies, so `*` is safe. |
+| `IMPORT_MAX_MB` | `2048` | Largest OneNote/PDF file you can import. Your proxy's upload limit must allow it too. |
 | `MS_CLIENT_ID` | *(none)* | Enables **Import from OneNote** — see below. |
 | `MS_TENANT` | `common` | Use `consumers` for personal Microsoft accounts only. |
 | `PORT` | `8787` | Port inside the container. |
@@ -112,7 +114,29 @@ Traefik has no upload limit by default. If you add the `buffering` middleware, s
 
 **Tailscale / LAN only:** skip the proxy and use `http://SERVER-IP:8787` (or the Tailscale name) directly. The apps allow plain HTTP for this.
 
+## Importing OneNote and PDF files
+
+Tap **Import** (bottom of the notebook list) while connected to your sync server. The conversion runs on the server, so the
+result reaches every device. Everything is converted on your own server; nothing is sent to Microsoft or anyone else.
+
+| File | Where it comes from |
+|---|---|
+| `.onepkg` | OneNote for Windows (desktop): **File → Export → Notebook → OneNote Package**. Imports the whole notebook with section groups. |
+| `.one` | A single section — **File → Export → Section → OneNote Section**, or from the notebook's folder. |
+| `.onetoc2` | The *Open Notebook* file inside a notebook folder (the whole folder must be uploaded as a `.zip` instead if it isn't on the server). |
+| `.zip` | OneDrive web: right-click a notebook → **Download**. |
+| `.pdf` | Any PDF, including OneNote's **File → Export → PDF**. Choose *Exact look* (page pictures, searchable) or *Editable text*. |
+
+OneNote files are converted with [one2html](https://github.com/msiemens/one2html) (MIT) and PDFs with Poppler, both built into the
+container. Pages, subpages, section groups and colors, pictures, ink (as drawings), to-do check boxes and tags come across; audio,
+video and file attachments are listed but not imported. Importing the same notebook again adds new pages and updates changed ones,
+but never overwrites pages you've edited or deleted in Feynos Notes.
+
+Big notebooks: make sure your reverse proxy allows uploads that size (`client_max_body_size 2g;` in Nginx / Nginx Proxy Manager).
+
 ## OneNote import setup
+
+(For importing straight from OneDrive. File imports need none of this.)
 
 The import runs on your sync server and signs in to Microsoft with a code, so it works the same from every device.
 It needs a free Microsoft app registration (one time, about 5 minutes):
