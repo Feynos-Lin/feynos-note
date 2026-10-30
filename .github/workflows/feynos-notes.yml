@@ -3054,26 +3054,46 @@ jobs:
             "productName": "Feynos Notes",
             "version": "1.0.0",
             "description": "OneNote-style notebooks with Google Drive and Proton Drive backups",
-            "author": { "name": "Feynos", "email": "feynos@users.noreply.github.com" },
-            "homepage": "https://github.com/Feynos-Lin",
+            "author": {
+              "name": "Feynos",
+              "email": "feynos@users.noreply.github.com"
+            },
+            "homepage": "https://github.com/Feynos-Lin/feynos-note",
             "license": "MIT",
             "main": "main.js",
             "build": {
               "appId": "com.feynos.notes",
               "productName": "Feynos Notes",
               "artifactName": "FeynosNotes-${version}-${arch}.${ext}",
-              "files": ["main.js", "preload.js", "www/**/*"],
-              "directories": { "output": "dist", "buildResources": "build" },
+              "files": [
+                "main.js",
+                "preload.js",
+                "www/**/*"
+              ],
+              "directories": {
+                "output": "dist",
+                "buildResources": "build"
+              },
               "linux": {
-                "target": ["rpm"],
+                "target": [
+                  "rpm"
+                ],
                 "category": "Office",
                 "icon": "build/icon.png",
                 "executableName": "feynos-notes",
                 "synopsis": "OneNote-style notes app",
-                "maintainer": "Feynos <feynos@users.noreply.github.com>"
+                "maintainer": "Feynos <feynos@users.noreply.github.com>",
+                "syncDesktopName": true
               },
               "win": {
-                "target": [{ "target": "nsis", "arch": ["x64"] }],
+                "target": [
+                  {
+                    "target": "nsis",
+                    "arch": [
+                      "x64"
+                    ]
+                  }
+                ],
                 "icon": "build/icon.png"
               },
               "nsis": {
@@ -3083,8 +3103,20 @@ jobs:
                 "createDesktopShortcut": true,
                 "createStartMenuShortcut": true,
                 "shortcutName": "Feynos Notes"
-              }
-            }
+              },
+              "publish": [
+                {
+                  "provider": "github",
+                  "owner": "Feynos-Lin",
+                  "repo": "feynos-note"
+                }
+              ]
+            },
+            "repository": {
+              "type": "git",
+              "url": "https://github.com/Feynos-Lin/feynos-note.git"
+            },
+            "desktopName": "feynos-notes.desktop"
           }
           FEYNOS_EOF
 
