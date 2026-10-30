@@ -4175,16 +4175,16 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          fail() { echo "::error title=Server image test failed::$1 $(docker logs t 2>&1 | tail -20 | tr -s '[:space:]' ' ')"; exit 1; }
+          fail() { echo "::error title=Server image test failed::$1 $(docker logs fns-test 2>&1 | tail -20 | tr -s '[:space:]' ' ')"; exit 1; }
           docker build -t feynos-sync-test:ci src/server
-          out=$(docker run -d --name t -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 feynos-sync-test:ci 2>&1) || fail "docker run: $out"
+          out=$(docker run -d --name fns-test -e FEYNOS_PASSWORD=testpassword123 -e BASE_PATH=/notes -p 8787:8787 feynos-sync-test:ci 2>&1) || fail "docker run: $out"
           sleep 2
-          [ "$(docker inspect -f '{{.State.Running}}' t)" = "true" ] || fail "container exited:"
+          [ "$(docker inspect -f '{{.State.Running}}' fns-test)" = "true" ] || fail "container exited:"
           ok=""
           for i in $(seq 1 30); do if curl -fsS http://127.0.0.1:8787/notes/api/health; then ok=1; break; fi; sleep 1; done
           [ -n "$ok" ] || fail "health check never answered"
           curl -fsS -X POST -H 'Content-Type: application/json' -d '{"password":"testpassword123","device":"ci"}' http://127.0.0.1:8787/notes/api/login | grep -q token || fail "login failed"
-          docker logs t
+          docker logs fns-test
 
       - name: Publish image
         uses: docker/build-push-action@v6
